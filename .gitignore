@@ -1,0 +1,13 @@
+node_modules/
+.gocache/
+.tmp/
+.bun-cache/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+cmd/traker/web/assets/
+data/traker.txt
+data/backups/
+data/cache/
+.env
+*.tmp
