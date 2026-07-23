@@ -85,7 +85,13 @@ Plex 使用独立的 `PLEX_SERVERS` JSON 数组配置：
 PLEX_SERVERS=[{"name":"家中 Plex","url":"http://127.0.0.1:32400","token":"你的_Plex_Token"},{"name":"备用 Plex","url":"https://plex.example.com","token":"另一个_Plex_Token"}]
 ```
 
-Plex 的 `name` 同样可以省略。后端先按顺序查询所有 Emby 服务，均未命中时再按顺序查询 Plex 服务；命中第一条结果后停止。Plex 会读取电影资料库的外部 GUID，通过 `tmdb://<id>` 精确匹配，并直接返回第一个媒体 Part 的地址。配置只在后端读取，不会写入前端、数据文件或元数据缓存。
+Plex 的 `name` 同样可以省略。使用 `PLAYBACK_PROVIDER_ORDER` 配置 Emby 和 Plex 的查询优先级，默认值为 `emby,plex`；要优先查询 Plex，可以这样配置：
+
+```dotenv
+PLAYBACK_PROVIDER_ORDER=plex,emby
+```
+
+该配置必须同时且各包含一次 `emby`、`plex`。来源内部仍然按照对应服务器数组的顺序查询，命中第一条结果后停止。Plex 会读取电影资料库的外部 GUID，通过 `tmdb://<id>` 精确匹配，并直接返回第一个媒体 Part 的地址。配置只在后端读取，不会写入前端、数据文件或元数据缓存。
 
 包含 `tm:` ID 的电影会在详情页显示“播放”按钮；前端使用 ArtPlayer 在站内播放媒体库返回的静态视频地址。剧集只有 TMDB 剧集 ID、没有具体集 ID，因此暂不显示播放入口。
 

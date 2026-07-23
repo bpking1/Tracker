@@ -416,7 +416,8 @@ TMDB API Key 必须通过环境变量或本地私有配置提供，不能提交�
 
 - Emby 服务通过 `EMBY_SERVERS` JSON 数组配置，每项包含服务地址、API Key 和可选名称；数组顺序即查询优先级。
 - Plex 服务通过 `PLEX_SERVERS` JSON 数组配置，每项包含服务地址、Token 和可选名称；数组顺序即查询优先级。
-- 后端使用电影记录中的 `tm:` ID 查询媒体库：先按顺序查询 Emby 的 TMDB Provider ID，全部未命中后再按顺序查询 Plex 电影资料库的外部 TMDB GUID，命中第一条结果后停止。
+- 播放来源优先级通过 `PLAYBACK_PROVIDER_ORDER` 配置，默认 `emby,plex`，也可设为 `plex,emby`；必须同时且各包含一次两个来源。来源内部仍按各自服务数组的顺序查询。
+- 后端使用电影记录中的 `tm:` ID 查询媒体库：Emby 查询 TMDB Provider ID，Plex 查询电影资料库的外部 TMDB GUID，命中第一条结果后停止。
 - 电影命中 `Movie` 后返回静态视频流地址，并在不下载完整视频的前提下解析一次重定向。
 - Plex 命中后返回第一个媒体 Part 的直连地址；如果资料库列表未包含 Part，则补充请求该条目的详情。Plex Token 作为播放地址查询参数传给浏览器或外部播放器，Traker 不代理媒体数据。
 - 前端使用 ArtPlayer 与浏览器原生 `<video>` 在站内播放最终视频地址；Traker 后端不提供 Range 代理，也不提供跳转到 Emby Web 的备用入口。

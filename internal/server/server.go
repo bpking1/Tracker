@@ -55,7 +55,19 @@ func New(recordStore *store.Store, static fs.FS) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	playbackClient := playback.NewClient(embyClient, plexClient)
+	providerOrder, err := playback.ProviderOrderFromEnvironment()
+	if err != nil {
+		return nil, err
+	}
+	providers := map[string]playback.Provider{
+		playback.ProviderEmby: embyClient,
+		playback.ProviderPlex: plexClient,
+	}
+	orderedProviders := make([]playback.Provider, 0, len(providerOrder))
+	for _, providerName := range providerOrder {
+		orderedProviders = append(orderedProviders, providers[providerName])
+	}
+	playbackClient := playback.NewClient(orderedProviders...)
 	return newHandler(recordStore, static, metadataCache, metadata.NewClientFromEnvironment(), playbackClient), nil
 }
 
