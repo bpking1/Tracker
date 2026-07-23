@@ -19,10 +19,9 @@ export function PlayerModal({ title, url, posterUrl, serverName, onClose }: Play
 
     let player: Artplayer | null = null
     let active = true
-    void Promise.all([import('artplayer'), import('artplayer-proxy-mediabunny')]).then(([artplayerModule, proxyModule]) => {
+    void import('artplayer').then((artplayerModule) => {
       if (!active || !containerRef.current) return
       const ArtplayerConstructor = artplayerModule.default
-      const proxyMediabunny = proxyModule.default
       player = new ArtplayerConstructor({
         container: containerRef.current,
         url,
@@ -36,16 +35,10 @@ export function PlayerModal({ title, url, posterUrl, serverName, onClose }: Play
         fullscreenWeb: true,
         mutex: true,
         theme: '#4f8a68',
-        proxy: proxyMediabunny({
-          source: url,
-          poster: posterUrl,
-          autoplay: true,
-          preflightRange: false,
-        }),
       })
       player.on('error', (cause) => {
         const detail = cause instanceof Error && cause.message ? `：${cause.message}` : ''
-        setError(`视频读取失败${detail}。请确认视频地址允许跨域访问，并且浏览器支持该视频的音视频编码。`)
+        setError(`视频读取失败${detail}。请确认视频地址可以访问，并且浏览器原生支持该文件的容器和音视频编码。`)
       })
     }).catch((cause: unknown) => {
       if (!active) return
