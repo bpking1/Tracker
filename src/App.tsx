@@ -232,10 +232,8 @@ export default function App() {
         )}</> : loading ? <Loading /> : <TimelineView records={snapshot?.records || []} onOpen={setDetail} />}
       </main>
 
-      {detail && snapshot && <DetailModal record={detail} onClose={() => setDetail(null)} onEdit={() => { setDetail(null); setEditor({ record: detail }) }} onMatch={() => { setDetail(null); setMatching(detail) }} onRefresh={async () => { try { const next = await api.refreshTmdb(snapshot.revision, detail.key); setSnapshot(next); setDetail(next.records.find((item) => item.key === detail.key) || detail) } catch (cause) { handleFailure(cause) } }} onDelete={() => { setDetail(null); setDeleting(detail) }} onSearchActor={searchActor} onPlay={async () => {
-        const link: PlayLink = await api.playLink(detail.mediaRef!)
+      {detail && snapshot && <DetailModal record={detail} onClose={() => setDetail(null)} onEdit={() => { setDetail(null); setEditor({ record: detail }) }} onMatch={() => { setDetail(null); setMatching(detail) }} onRefresh={async () => { try { const next = await api.refreshTmdb(snapshot.revision, detail.key); setSnapshot(next); setDetail(next.records.find((item) => item.key === detail.key) || detail) } catch (cause) { handleFailure(cause) } }} onDelete={() => { setDetail(null); setDeleting(detail) }} onSearchActor={searchActor} onResolvePlayLink={() => api.playLink(detail.mediaRef!)} onPlay={(link: PlayLink) => {
         const url = link.redirectedUrl || link.playUrl
-        if (!url) throw new Error('Emby 没有返回播放地址')
         setPlayer({ title: link.itemName || detail.title, url, mediaId: `${detail.mediaRef!.type}:${detail.mediaRef!.id}`, posterUrl: detail.metadata?.posterUrl, serverName: link.serverName })
       }} />}
       {editor && snapshot && <EditorModal record={editor.record} revision={snapshot.revision} changed={externalChange} onClose={() => setEditor(null)} onSaved={handleMutation} onError={handleFailure} />}
