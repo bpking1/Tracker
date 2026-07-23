@@ -28,7 +28,7 @@ import {
   X,
 } from 'lucide-react'
 import { api } from './api'
-import type { AppConfig, RecordInput, RecordItem, Snapshot, Status, TmdbResult } from './types'
+import type { AppConfig, MediaRef, RecordInput, RecordItem, Snapshot, Status, TmdbResult } from './types'
 
 const statusMeta: Record<Status, { label: string; symbol: string; className: string }> = {
   planned: { label: '想看', symbol: '−', className: 'status-planned' },
@@ -69,6 +69,7 @@ export default function App() {
   const [quickSaving, setQuickSaving] = useState(false)
   const [batchMatching, setBatchMatching] = useState(false)
   const [batchSummary, setBatchSummary] = useState('')
+  const [duplicateWarning, setDuplicateWarning] = useState('')
 
   const load = async () => {
     try { setSnapshot(await api.records()); setError(''); setExternalChange(false) }
@@ -132,6 +133,11 @@ export default function App() {
   const timelineCount = useMemo(() => snapshot?.records.filter((record) => (record.status === 'watched' || record.status === 'dropped') && record.completedAt).length || 0, [snapshot])
 
   const handleMutation = (next: Snapshot) => { setSnapshot(next); setDetail(null); setEditor(null); setMatching(null); setDeleting(null); setExternalChange(false) }
+  const handleTmdbMatch = (next: Snapshot, mediaRef: MediaRef) => {
+    const matches = next.records.filter((record) => sameMediaRef(record.mediaRef, mediaRef))
+    setDuplicateWarning(matches.length > 1 ? duplicateMessage([mediaRef]) : '')
+    handleMutation(next)
+  }
   const changeView = (mode: 'text' | 'poster') => { setViewMode(mode); localStorage.setItem('traker-view', mode) }
   const searchActor = (actor: string) => {
     setQuery(actor)
@@ -172,12 +178,15 @@ export default function App() {
     if (!snapshot || (metadataCounts.unmatched === 0 && metadataCounts.issue === 0) || batchMatching) return
     setBatchMatching(true)
     setBatchSummary('')
+    setDuplicateWarning('')
     try {
       const refreshResult = await api.refreshMissingMetadata(snapshot.revision)
       const matchResult = await api.autoMatchTmdb(refreshResult.snapshot.revision)
+      const newDuplicates = newlyDuplicatedMediaRefs(snapshot.records, matchResult.snapshot.records)
       setSnapshot(matchResult.snapshot)
       setError('')
       setExternalChange(false)
+      if (newDuplicates.length > 0) setDuplicateWarning(duplicateMessage(newDuplicates))
       const parts = [`补全元数据 ${refreshResult.refreshed} 条`, `自动匹配 ${matchResult.matched} 条`]
       if (matchResult.noResults.length) parts.push(`无结果 ${matchResult.noResults.length} 条`)
       const failed = refreshResult.failed.length + matchResult.failed.length
@@ -206,6 +215,7 @@ export default function App() {
         {externalChange && <Notice text="数据文件已在其他位置更新，请刷新后继续编辑。" action="刷新" onAction={() => { setDetail(null); setEditor(null); setMatching(null); void load() }} />}
         {error && <Notice text={error} action="重试" onAction={() => void load()} tone="error" />}
         {batchSummary && <Notice text={batchSummary} action="关闭" onAction={() => setBatchSummary('')} tone="success" />}
+        {duplicateWarning && <Notice text={duplicateWarning} action="关闭" onAction={() => setDuplicateWarning('')} />}
 
         {page === 'library' ? <><form className="quick-add" onSubmit={quickAdd}>
           <Plus size={18} />
@@ -239,7 +249,7 @@ export default function App() {
 
       {detail && snapshot && <DetailModal record={detail} onClose={() => setDetail(null)} onEdit={() => { setDetail(null); setEditor({ record: detail }) }} onMatch={() => { setDetail(null); setMatching(detail) }} onRefresh={async () => { try { const next = await api.refreshTmdb(snapshot.revision, detail.key); setSnapshot(next); setDetail(next.records.find((item) => item.key === detail.key) || detail) } catch (cause) { handleFailure(cause) } }} onDelete={() => { setDetail(null); setDeleting(detail) }} onSearchActor={searchActor} />}
       {editor && snapshot && <EditorModal record={editor.record} revision={snapshot.revision} changed={externalChange} onClose={() => setEditor(null)} onSaved={handleMutation} onError={handleFailure} />}
-      {matching && snapshot && <TmdbModal record={matching} revision={snapshot.revision} onClose={() => setMatching(null)} onSaved={handleMutation} onError={handleFailure} />}
+      {matching && snapshot && <TmdbModal record={matching} revision={snapshot.revision} onClose={() => setMatching(null)} onSaved={handleTmdbMatch} onError={handleFailure} />}
       {deleting && snapshot && <ConfirmDelete record={deleting} onClose={() => setDeleting(null)} onConfirm={async () => { try { handleMutation(await api.remove(snapshot.revision, deleting.key)) } catch (cause) { handleFailure(cause) } }} />}
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </div>
@@ -416,7 +426,7 @@ function EditorModal({ record, revision, changed, onClose, onSaved, onError }: {
   </Modal>
 }
 
-function TmdbModal({ record, revision, onClose, onSaved, onError }: { record: RecordItem; revision: string; onClose: () => void; onSaved: (value: Snapshot) => void; onError: (cause: unknown) => void }) {
+function TmdbModal({ record, revision, onClose, onSaved, onError }: { record: RecordItem; revision: string; onClose: () => void; onSaved: (value: Snapshot, mediaRef: MediaRef) => void; onError: (cause: unknown) => void }) {
   const [query, setQuery] = useState(record.title)
   const [results, setResults] = useState<TmdbResult[]>([])
   const [loading, setLoading] = useState(false)
@@ -443,7 +453,7 @@ function TmdbModal({ record, revision, onClose, onSaved, onError }: { record: Re
     }
   }
   useEffect(() => { void search() }, [])
-  return <Modal title="匹配 TMDB" onClose={onClose} wide><form className="tmdb-search" onSubmit={search}><label className="search-box"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} /></label><button className="secondary-button" disabled={loading}>{loading ? <LoaderCircle className="spin" size={18} /> : <Search size={18} />}搜索</button></form>{error && <p className="inline-error">{error}</p>}<div className="tmdb-results">{results.map((item) => <article key={`${item.type}-${item.id}`}><div className="poster">{item.posterPath ? <img src={`https://image.tmdb.org/t/p/w185${item.posterPath}`} alt="" /> : <Film size={26} />}</div><div><h3>{item.title}</h3><p className="result-meta">{item.type === 'tv' ? '剧集' : '电影'} · {item.date?.slice(0, 4) || '年份未知'} {item.voteAverage > 0 && `· TMDB ${item.voteAverage.toFixed(1)}`}</p><p className="overview">{item.overview || '暂无简介'}</p></div><button className="secondary-button" onClick={async () => { try { onSaved(await api.matchTmdb(revision, record.key, item.type === 'tv' ? 'tv' : 'tm', item.id)) } catch (cause) { onError(cause) } }}>选择</button></article>)}</div></Modal>
+  return <Modal title="匹配 TMDB" onClose={onClose} wide><form className="tmdb-search" onSubmit={search}><label className="search-box"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} /></label><button className="secondary-button" disabled={loading}>{loading ? <LoaderCircle className="spin" size={18} /> : <Search size={18} />}搜索</button></form>{error && <p className="inline-error">{error}</p>}<div className="tmdb-results">{results.map((item) => <article key={`${item.type}-${item.id}`}><div className="poster">{item.posterPath ? <img src={`https://image.tmdb.org/t/p/w185${item.posterPath}`} alt="" /> : <Film size={26} />}</div><div><h3>{item.title}</h3><p className="result-meta">{item.type === 'tv' ? '剧集' : '电影'} · {item.date?.slice(0, 4) || '年份未知'} {item.voteAverage > 0 && `· TMDB ${item.voteAverage.toFixed(1)}`}</p><p className="overview">{item.overview || '暂无简介'}</p></div><button className="secondary-button" onClick={async () => { const mediaRef: MediaRef = { type: item.type === 'tv' ? 'tv' : 'tm', id: item.id }; try { onSaved(await api.matchTmdb(revision, record.key, mediaRef.type, mediaRef.id), mediaRef) } catch (cause) { onError(cause) } }}>选择</button></article>)}</div></Modal>
 }
 
 function SettingsModal({ onClose }: { onClose: () => void }) {
@@ -461,6 +471,28 @@ function Field({ label, wide, children }: { label: string; wide?: boolean; child
 function Notice({ text, action, onAction, tone }: { text: string; action: string; onAction: () => void; tone?: 'error' | 'success' }) { return <div className={`notice ${tone || ''}`}>{tone === 'success' ? <Check size={18} /> : <AlertTriangle size={18} />}<span>{text}</span><button onClick={onAction}>{action}{tone !== 'success' && <RefreshCw size={15} />}</button></div> }
 function Loading() { return <div className="loading"><LoaderCircle className="spin" size={26} /><span>正在读取片单</span></div> }
 function Empty({ hasQuery, onAdd }: { hasQuery: boolean; onAdd: () => void }) { return <div className="empty"><div><Film size={26} /></div><h2>{hasQuery ? '没有符合条件的记录' : '片单还是空的'}</h2><p>{hasQuery ? '试试更换关键词或筛选条件。' : '添加第一部想看的电影或剧集。'}</p>{!hasQuery && <button className="primary-button" onClick={onAdd}><Plus size={18} />添加记录</button>}</div> }
+function sameMediaRef(left: MediaRef | null, right: MediaRef) { return left?.type === right.type && left.id === right.id }
+function mediaRefCounts(records: RecordItem[]) {
+  const counts = new Map<string, { mediaRef: MediaRef; count: number }>()
+  records.forEach((record) => {
+    if (!record.mediaRef) return
+    const key = `${record.mediaRef.type}:${record.mediaRef.id}`
+    const current = counts.get(key)
+    counts.set(key, { mediaRef: record.mediaRef, count: (current?.count || 0) + 1 })
+  })
+  return counts
+}
+function newlyDuplicatedMediaRefs(before: RecordItem[], after: RecordItem[]) {
+  const previous = mediaRefCounts(before)
+  return Array.from(mediaRefCounts(after).entries())
+    .filter(([key, value]) => value.count > 1 && (previous.get(key)?.count || 0) < 2)
+    .map(([, value]) => value.mediaRef)
+}
+function duplicateMessage(mediaRefs: MediaRef[]) {
+  const refs = mediaRefs.slice(0, 3).map((mediaRef) => `${mediaRef.type}:${mediaRef.id}`).join('、')
+  const remaining = mediaRefs.length > 3 ? ` 等 ${mediaRefs.length} 组` : ''
+  return `片单中已存在相同 TMDB 记录（${refs}${remaining}），本次匹配仍已保存。`
+}
 function toInput(record: RecordItem): RecordInput { return { status: record.status, title: record.title, mediaRef: record.mediaRef, completedAt: record.completedAt, createdAt: record.createdAt, rating: record.rating, progress: record.progress, tags: record.tags, comment: record.comment } }
 function today() { const date = new Date(); return `${date.getFullYear()}.${String(date.getMonth() + 1).padStart(2, '0')}.${String(date.getDate()).padStart(2, '0')}` }
 function toHtmlDate(value: string | null) { return value?.replaceAll('.', '-') || '' }
