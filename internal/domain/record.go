@@ -26,26 +26,28 @@ type MediaMetadata struct {
 	ReleaseDate   string   `json:"releaseDate"`
 	Overview      string   `json:"overview"`
 	PosterURL     string   `json:"posterUrl"`
+	Genres        []string `json:"genres"`
 	Cast          []string `json:"cast"`
 	VoteAverage   float64  `json:"voteAverage"`
 	FetchedAt     string   `json:"fetchedAt"`
 }
 
 type Record struct {
-	Key         string         `json:"key"`
-	Status      Status         `json:"status"`
-	Title       string         `json:"title"`
-	MediaRef    *MediaRef      `json:"mediaRef"`
-	CompletedAt *string        `json:"completedAt"`
-	CreatedAt   *string        `json:"createdAt"`
-	Rating      *int           `json:"rating"`
-	Progress    *string        `json:"progress"`
-	Tags        []string       `json:"tags"`
-	Comment     *string        `json:"comment"`
-	RawLine     string         `json:"rawLine"`
-	LineNumber  int            `json:"lineNumber"`
-	Warnings    []ParseWarning `json:"warnings"`
-	Metadata    *MediaMetadata `json:"metadata"`
+	Key           string         `json:"key"`
+	Status        Status         `json:"status"`
+	Title         string         `json:"title"`
+	MediaRef      *MediaRef      `json:"mediaRef"`
+	CompletedAt   *string        `json:"completedAt"`
+	CreatedAt     *string        `json:"createdAt"`
+	Rating        *int           `json:"rating"`
+	Progress      *string        `json:"progress"`
+	Tags          []string       `json:"tags"`
+	Comment       *string        `json:"comment"`
+	RawLine       string         `json:"rawLine"`
+	LineNumber    int            `json:"lineNumber"`
+	Warnings      []ParseWarning `json:"warnings"`
+	Metadata      *MediaMetadata `json:"metadata"`
+	MetadataState string         `json:"metadataState"`
 }
 
 type RecordInput struct {

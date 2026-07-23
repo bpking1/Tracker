@@ -11,9 +11,9 @@ import (
 )
 
 var (
-	mediaPattern = regexp.MustCompile(`^(tm|tv|tmdb):(\d+)$`)
+	mediaPattern  = regexp.MustCompile(`^(tm|tv|tmdb):(\d+)$`)
 	ratingPattern = regexp.MustCompile(`^\*(\d+)$`)
-	datePattern = regexp.MustCompile(`^\d{4}\.\d{2}\.\d{2}$`)
+	datePattern   = regexp.MustCompile(`^(\d{4})([.-])(\d{1,2})([.-])(\d{1,2})$`)
 )
 
 func ParseLine(raw string, lineNumber int) (*domain.Record, bool) {
@@ -24,16 +24,11 @@ func ParseLine(raw string, lineNumber int) (*domain.Record, bool) {
 
 	record := &domain.Record{Status: domain.Planned, RawLine: raw, LineNumber: lineNumber, Tags: []string{}, Warnings: []domain.ParseWarning{}}
 	body := strings.TrimLeft(raw, " \t")
-	if status, ok := parseStatus(body[0]); ok {
-		record.Status = status
-		if len(body) == 1 || (body[1] != ' ' && body[1] != '\t') {
-			record.Warnings = append(record.Warnings, warning("invalid_status_spacing", "状态符号后需要空格"))
-			return record, true
+	if len(body) > 1 && (body[1] == ' ' || body[1] == '\t') {
+		if status, ok := parseStatus(body[0]); ok {
+			record.Status = status
+			body = strings.TrimSpace(body[1:])
 		}
-		body = strings.TrimSpace(body[1:])
-	} else {
-		record.Warnings = append(record.Warnings, warning("legacy_status", "旧格式记录缺少状态符号，已按想看读取"))
-		body = strings.TrimSpace(body)
 	}
 
 	before, comment, hasComment := splitComment(body)
@@ -65,11 +60,12 @@ func ParseLine(raw string, lineNumber int) (*domain.Record, bool) {
 			continue
 		}
 		if datePattern.MatchString(token) {
-			if _, err := time.Parse("2006.01.02", token); err != nil {
+			normalized, err := normalizeDate(token)
+			if err != nil {
 				record.Warnings = append(record.Warnings, warning("invalid_date", fmt.Sprintf("无效日期：%s", token)))
 				titleTokens = append(titleTokens, token)
 			} else {
-				dates = append(dates, token)
+				dates = append(dates, normalized)
 			}
 			continue
 		}
@@ -96,11 +92,11 @@ func ParseLine(raw string, lineNumber int) (*domain.Record, bool) {
 			}
 			continue
 		}
-		if strings.HasPrefix(token, "#") && len(token) > 1 {
+		if strings.HasPrefix(token, "+") && len(token) > 1 {
 			record.Tags = append(record.Tags, unescape(token[1:]))
 			continue
 		}
-		if strings.HasPrefix(token, "*") || strings.HasPrefix(token, "tm:") || strings.HasPrefix(token, "tv:") || token == "~" || token == "#" {
+		if strings.HasPrefix(token, "*") || strings.HasPrefix(token, "tm:") || strings.HasPrefix(token, "tv:") || token == "~" || token == "+" {
 			record.Warnings = append(record.Warnings, warning("invalid_marker", fmt.Sprintf("无法识别格式标记：%s", token)))
 		}
 		titleTokens = append(titleTokens, unescape(token))
@@ -133,24 +129,40 @@ func Serialize(input domain.RecordInput) (string, error) {
 		if input.Status != domain.Watched && input.Status != domain.Dropped {
 			return "", fmt.Errorf("completedAt is only valid for watched or dropped records")
 		}
-		if err := validateDate(*input.CompletedAt); err != nil { return "", err }
-		parts = append(parts, *input.CompletedAt)
+		completedAt, err := normalizeDate(*input.CompletedAt)
+		if err != nil {
+			return "", err
+		}
+		parts = append(parts, completedAt)
 	}
-	if input.CreatedAt != nil {
-		if err := validateDate(*input.CreatedAt); err != nil { return "", err }
-		parts = append(parts, *input.CreatedAt)
+	createdAt := input.CreatedAt
+	if input.CompletedAt != nil && createdAt == nil {
+		createdAt = input.CompletedAt
+	}
+	if createdAt != nil {
+		normalized, err := normalizeDate(*createdAt)
+		if err != nil {
+			return "", err
+		}
+		parts = append(parts, normalized)
 	}
 	if input.Rating != nil {
-		if *input.Rating < 1 || *input.Rating > 5 { return "", fmt.Errorf("rating must be between 1 and 5") }
+		if *input.Rating < 1 || *input.Rating > 5 {
+			return "", fmt.Errorf("rating must be between 1 and 5")
+		}
 		parts = append(parts, fmt.Sprintf("*%d", *input.Rating))
 	}
 	if input.Progress != nil && strings.TrimSpace(*input.Progress) != "" {
 		parts = append(parts, "~"+escapeToken(strings.TrimSpace(*input.Progress)))
 	}
 	for _, tag := range input.Tags {
-		if strings.TrimSpace(tag) == "" { continue }
-		if strings.ContainsAny(tag, " \t") { return "", fmt.Errorf("tag cannot contain whitespace") }
-		parts = append(parts, "#"+escapeToken(tag))
+		if strings.TrimSpace(tag) == "" {
+			continue
+		}
+		if strings.ContainsAny(tag, " \t") {
+			return "", fmt.Errorf("tag cannot contain whitespace")
+		}
+		parts = append(parts, "+"+escapeToken(tag))
 	}
 	line := strings.Join(parts, " ")
 	if input.Comment != nil && strings.TrimSpace(*input.Comment) != "" {
@@ -180,30 +192,100 @@ func applyDates(record *domain.Record, dates []string) {
 }
 
 func parseStatus(value byte) (domain.Status, bool) {
-	switch value { case '-': return domain.Planned, true; case '>': return domain.Watching, true; case 'x': return domain.Watched, true; case '!': return domain.Dropped, true }
+	switch value {
+	case '-':
+		return domain.Planned, true
+	case '>':
+		return domain.Watching, true
+	case 'x':
+		return domain.Watched, true
+	case '!':
+		return domain.Dropped, true
+	}
 	return "", false
 }
 
 func statusSymbol(status domain.Status) (string, bool) {
-	switch status { case domain.Planned: return "-", true; case domain.Watching: return ">", true; case domain.Watched: return "x", true; case domain.Dropped: return "!", true }
+	switch status {
+	case domain.Planned:
+		return "-", true
+	case domain.Watching:
+		return ">", true
+	case domain.Watched:
+		return "x", true
+	case domain.Dropped:
+		return "!", true
+	}
 	return "", false
 }
 
 func splitComment(value string) (string, string, bool) {
 	escaped := false
 	for index, char := range value {
-		if char == '\\' { escaped = !escaped; continue }
-		if char == '|' && !escaped { return strings.TrimSpace(value[:index]), value[index+1:], true }
+		if char == '\\' {
+			escaped = !escaped
+			continue
+		}
+		if char == '|' && !escaped {
+			return strings.TrimSpace(value[:index]), value[index+1:], true
+		}
 		escaped = false
 	}
 	return value, "", false
 }
 
 func isEscapedToken(token string) bool { return strings.HasPrefix(token, `\`) }
-func escapeTitle(value string) string { return strings.Join(mapTokens(value, escapeToken), " ") }
-func mapTokens(value string, mapper func(string) string) []string { values := strings.Fields(value); for i := range values { values[i] = mapper(values[i]) }; return values }
-func escapeToken(value string) string { value = strings.ReplaceAll(value, `\`, `\\`); for _, marker := range []string{"|", "#", "*", "~"} { value = strings.ReplaceAll(value, marker, `\`+marker) }; return value }
-func escapeComment(value string) string { value = strings.ReplaceAll(value, `\`, `\\`); return strings.ReplaceAll(value, "|", `\|`) }
-func unescape(value string) string { var b strings.Builder; escaped := false; for _, r := range value { if escaped { b.WriteRune(r); escaped = false } else if r == '\\' { escaped = true } else { b.WriteRune(r) } }; if escaped { b.WriteRune('\\') }; return b.String() }
-func warning(code, message string) domain.ParseWarning { return domain.ParseWarning{Code: code, Message: message} }
-func validateDate(value string) error { if !datePattern.MatchString(value) { return fmt.Errorf("date must use YYYY.MM.DD") }; if _, err := time.Parse("2006.01.02", value); err != nil { return fmt.Errorf("invalid date") }; return nil }
+func escapeTitle(value string) string  { return strings.Join(mapTokens(value, escapeToken), " ") }
+func mapTokens(value string, mapper func(string) string) []string {
+	values := strings.Fields(value)
+	for i := range values {
+		values[i] = mapper(values[i])
+	}
+	return values
+}
+func escapeToken(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	for _, marker := range []string{"|", "+", "*", "~"} {
+		value = strings.ReplaceAll(value, marker, `\`+marker)
+	}
+	return value
+}
+func escapeComment(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	return strings.ReplaceAll(value, "|", `\|`)
+}
+func unescape(value string) string {
+	var b strings.Builder
+	escaped := false
+	for _, r := range value {
+		if escaped {
+			b.WriteRune(r)
+			escaped = false
+		} else if r == '\\' {
+			escaped = true
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	if escaped {
+		b.WriteRune('\\')
+	}
+	return b.String()
+}
+func warning(code, message string) domain.ParseWarning {
+	return domain.ParseWarning{Code: code, Message: message}
+}
+func normalizeDate(value string) (string, error) {
+	match := datePattern.FindStringSubmatch(value)
+	if match == nil || match[2] != match[4] {
+		return "", fmt.Errorf("date must use YYYY.M.D or YYYY-M-D")
+	}
+	year, _ := strconv.Atoi(match[1])
+	month, _ := strconv.Atoi(match[3])
+	day, _ := strconv.Atoi(match[5])
+	normalized := fmt.Sprintf("%04d.%02d.%02d", year, month, day)
+	if _, err := time.Parse("2006.01.02", normalized); err != nil {
+		return "", fmt.Errorf("invalid date")
+	}
+	return normalized, nil
+}

@@ -17,6 +17,7 @@ export interface MediaMetadata {
   releaseDate: string
   overview: string
   posterUrl: string
+  genres: string[]
   cast: string[]
   voteAverage: number
   fetchedAt: string
@@ -37,9 +38,10 @@ export interface RecordItem {
   lineNumber: number
   warnings: ParseWarning[]
   metadata?: MediaMetadata | null
+  metadataState: 'unmatched' | 'missing' | 'invalid' | 'ready'
 }
 
-export type RecordInput = Omit<RecordItem, 'key' | 'rawLine' | 'lineNumber' | 'warnings' | 'metadata'>
+export type RecordInput = Omit<RecordItem, 'key' | 'rawLine' | 'lineNumber' | 'warnings' | 'metadata' | 'metadataState'>
 
 export interface Snapshot {
   revision: string
@@ -55,4 +57,28 @@ export interface TmdbResult {
   overview: string
   posterPath: string
   voteAverage: number
+}
+
+export interface AppConfig {
+  dataFile: string
+}
+
+export interface AutoMatchFailure {
+  title: string
+  error: string
+}
+
+export interface AutoMatchResult {
+  snapshot: Snapshot
+  total: number
+  matched: number
+  noResults: string[]
+  failed: AutoMatchFailure[]
+}
+
+export interface RefreshMetadataResult {
+  snapshot: Snapshot
+  total: number
+  refreshed: number
+  failed: AutoMatchFailure[]
 }

@@ -85,16 +85,25 @@ func (c *Cache) Enrich(snapshot *domain.Snapshot) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for index := range snapshot.Records {
+		snapshot.Records[index].Metadata = nil
 		mediaRef := snapshot.Records[index].MediaRef
 		if mediaRef == nil {
+			snapshot.Records[index].MetadataState = "unmatched"
 			continue
 		}
+		snapshot.Records[index].MetadataState = "missing"
 		if item, ok := c.items[cacheKey(*mediaRef)]; ok {
 			copy := item
+			snapshot.Records[index].MetadataState = "ready"
+			if copy.Genres == nil {
+				snapshot.Records[index].MetadataState = "invalid"
+				copy.Genres = []string{}
+			}
 			if copy.PosterURL != "" {
 				cacheName := filepath.Base(strings.TrimPrefix(copy.PosterURL, "/api/images/"))
 				if _, err := os.Stat(filepath.Join(c.images, cacheName)); err != nil {
 					copy.PosterURL = ""
+					snapshot.Records[index].MetadataState = "invalid"
 				}
 			}
 			snapshot.Records[index].Metadata = &copy
@@ -232,7 +241,10 @@ func (c *Client) Fetch(ctx context.Context, cache *Cache, mediaRef domain.MediaR
 		Overview      string  `json:"overview"`
 		PosterPath    string  `json:"poster_path"`
 		VoteAverage   float64 `json:"vote_average"`
-		Credits       struct {
+		Genres        []struct {
+			Name string `json:"name"`
+		} `json:"genres"`
+		Credits struct {
 			Cast []struct {
 				Name string `json:"name"`
 			} `json:"cast"`
@@ -254,7 +266,13 @@ func (c *Client) Fetch(ctx context.Context, cache *Cache, mediaRef domain.MediaR
 			break
 		}
 	}
-	item := domain.MediaMetadata{MediaRef: mediaRef, Title: title, OriginalTitle: originalTitle, ReleaseDate: releaseDate, Overview: payload.Overview, Cast: cast, VoteAverage: payload.VoteAverage, FetchedAt: time.Now().UTC().Format(time.RFC3339)}
+	genres := make([]string, 0, len(payload.Genres))
+	for _, genre := range payload.Genres {
+		if genre.Name != "" {
+			genres = append(genres, genre.Name)
+		}
+	}
+	item := domain.MediaMetadata{MediaRef: mediaRef, Title: title, OriginalTitle: originalTitle, ReleaseDate: releaseDate, Overview: payload.Overview, Genres: genres, Cast: cast, VoteAverage: payload.VoteAverage, FetchedAt: time.Now().UTC().Format(time.RFC3339)}
 	if payload.PosterPath != "" {
 		cacheName := fmt.Sprintf("%s-%d%s", mediaRef.Type, mediaRef.ID, imageExtension(payload.PosterPath))
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.imageBase+payload.PosterPath, nil)

@@ -1,4 +1,4 @@
-import type { RecordInput, Snapshot, TmdbResult } from './types'
+import type { AppConfig, AutoMatchResult, RecordInput, RefreshMetadataResult, Snapshot, TmdbResult } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -34,4 +34,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ revision }),
     }),
+  autoMatchTmdb: (revision: string) =>
+    request<AutoMatchResult>('/api/tmdb/auto-match', {
+      method: 'POST',
+      body: JSON.stringify({ revision }),
+    }),
+  refreshMissingMetadata: (revision: string) =>
+    request<RefreshMetadataResult>('/api/tmdb/refresh-missing', {
+      method: 'POST',
+      body: JSON.stringify({ revision }),
+    }),
+  config: () => request<AppConfig>('/api/config'),
 }

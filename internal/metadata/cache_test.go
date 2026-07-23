@@ -22,7 +22,7 @@ func TestFetchCachesMetadataAndPoster(t *testing.T) {
 				t.Fatal("missing bearer token")
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"title":"测试电影","original_title":"Test Film","release_date":"2026-01-02","overview":"简介","poster_path":"/poster.jpg","vote_average":8.2,"credits":{"cast":[{"name":"演员甲"},{"name":"演员乙"}]}}`)
+			_, _ = io.WriteString(w, `{"title":"测试电影","original_title":"Test Film","release_date":"2026-01-02","overview":"简介","poster_path":"/poster.jpg","vote_average":8.2,"genres":[{"id":18,"name":"剧情"},{"id":878,"name":"科幻"}],"credits":{"cast":[{"name":"演员甲"},{"name":"演员乙"}]}}`)
 		case "/poster.jpg":
 			w.Header().Set("Content-Type", "image/jpeg")
 			_, _ = w.Write([]byte{0xff, 0xd8, 0xff, 0xd9})
@@ -42,7 +42,7 @@ func TestFetchCachesMetadataAndPoster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.Title != "测试电影" || item.PosterURL != "/api/images/tm-42.jpg" || len(item.Cast) != 2 {
+	if item.Title != "测试电影" || item.PosterURL != "/api/images/tm-42.jpg" || len(item.Cast) != 2 || len(item.Genres) != 2 || item.Genres[0] != "剧情" || item.Genres[1] != "科幻" {
 		t.Fatalf("unexpected metadata: %#v", item)
 	}
 	data, err := os.ReadFile(filepath.Join(filepath.Dir(dataFile), "cache", "metadata.json"))
@@ -53,15 +53,60 @@ func TestFetchCachesMetadataAndPoster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer image.Close()
 	if contentType != "image/jpeg" {
 		t.Fatalf("unexpected content type %q", contentType)
+	}
+	if err := image.Close(); err != nil {
+		t.Fatal(err)
 	}
 
 	snapshot := domain.Snapshot{Records: []domain.Record{{MediaRef: &domain.MediaRef{Type: "tm", ID: 42}}}}
 	cache.Enrich(&snapshot)
 	if snapshot.Records[0].Metadata == nil || snapshot.Records[0].Metadata.Title != "测试电影" {
 		t.Fatal("snapshot was not enriched from cache")
+	}
+	if snapshot.Records[0].MetadataState != "ready" {
+		t.Fatalf("unexpected metadata state %q", snapshot.Records[0].MetadataState)
+	}
+	if err := os.Remove(filepath.Join(filepath.Dir(dataFile), "cache", "images", "tm-42.jpg")); err != nil {
+		t.Fatal(err)
+	}
+	cache.Enrich(&snapshot)
+	if snapshot.Records[0].MetadataState != "invalid" {
+		t.Fatalf("missing poster should invalidate cached metadata, got %q", snapshot.Records[0].MetadataState)
+	}
+}
+
+func TestEnrichReportsUnmatchedAndMissingMetadata(t *testing.T) {
+	dataFile := filepath.Join(t.TempDir(), "traker.txt")
+	cache, err := NewCache(dataFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := domain.Snapshot{Records: []domain.Record{
+		{},
+		{MediaRef: &domain.MediaRef{Type: "tv", ID: 99}},
+	}}
+	cache.Enrich(&snapshot)
+	if snapshot.Records[0].MetadataState != "unmatched" || snapshot.Records[1].MetadataState != "missing" {
+		t.Fatalf("unexpected metadata states: %#v", snapshot.Records)
+	}
+}
+
+func TestEnrichMarksLegacyMetadataWithoutGenresInvalid(t *testing.T) {
+	dataFile := filepath.Join(t.TempDir(), "traker.txt")
+	cache, err := NewCache(dataFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaRef := domain.MediaRef{Type: "tm", ID: 7}
+	if err := cache.Put(domain.MediaMetadata{MediaRef: mediaRef, Title: "旧缓存"}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := domain.Snapshot{Records: []domain.Record{{MediaRef: &mediaRef}}}
+	cache.Enrich(&snapshot)
+	if snapshot.Records[0].MetadataState != "invalid" || snapshot.Records[0].Metadata == nil || snapshot.Records[0].Metadata.Genres == nil {
+		t.Fatalf("legacy metadata was not marked invalid: %#v", snapshot.Records[0])
 	}
 }
 

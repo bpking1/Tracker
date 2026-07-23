@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,7 +23,13 @@ type Server struct {
 	store    *store.Store
 	static   fs.FS
 	metadata *metadata.Cache
-	tmdb     *metadata.Client
+	tmdb     metadataClient
+}
+
+type metadataClient interface {
+	Configured() bool
+	Search(context.Context, string, string) ([]metadata.SearchResult, error)
+	Fetch(context.Context, *metadata.Cache, domain.MediaRef) (domain.MediaMetadata, error)
 }
 
 func New(recordStore *store.Store, static fs.FS) (http.Handler, error) {
@@ -30,12 +37,19 @@ func New(recordStore *store.Store, static fs.FS) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{store: recordStore, static: static, metadata: metadataCache, tmdb: metadata.NewClientFromEnvironment()}
+	return newHandler(recordStore, static, metadataCache, metadata.NewClientFromEnvironment()), nil
+}
+
+func newHandler(recordStore *store.Store, static fs.FS, metadataCache *metadata.Cache, tmdb metadataClient) http.Handler {
+	s := &Server{store: recordStore, static: static, metadata: metadataCache, tmdb: tmdb}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/records", s.records)
 	mux.HandleFunc("/api/records/", s.recordByKey)
 	mux.HandleFunc("/api/tmdb/search", s.tmdbSearch)
 	mux.HandleFunc("/api/tmdb/config", s.tmdbConfig)
+	mux.HandleFunc("/api/tmdb/auto-match", s.tmdbAutoMatch)
+	mux.HandleFunc("/api/tmdb/refresh-missing", s.tmdbRefreshMissing)
+	mux.HandleFunc("/api/config", s.config)
 	mux.HandleFunc("/api/images/", s.image)
 	mux.HandleFunc("/api/events", s.events)
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -44,7 +58,7 @@ func New(recordStore *store.Store, static fs.FS) (http.Handler, error) {
 	if static != nil {
 		mux.HandleFunc("/", s.staticFile)
 	}
-	return logging(mux), nil
+	return logging(mux)
 }
 
 func (s *Server) records(w http.ResponseWriter, r *http.Request) {
@@ -156,6 +170,168 @@ func (s *Server) tmdbSearch(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) tmdbConfig(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"configured": s.tmdb.Configured()})
+}
+
+func (s *Server) config(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"dataFile": s.store.Path()})
+}
+
+type autoMatchFailure struct {
+	Title string `json:"title"`
+	Error string `json:"error"`
+}
+
+type autoMatchResult struct {
+	Snapshot  domain.Snapshot    `json:"snapshot"`
+	Total     int                `json:"total"`
+	Matched   int                `json:"matched"`
+	NoResults []string           `json:"noResults"`
+	Failed    []autoMatchFailure `json:"failed"`
+}
+
+type refreshMetadataResult struct {
+	Snapshot  domain.Snapshot    `json:"snapshot"`
+	Total     int                `json:"total"`
+	Refreshed int                `json:"refreshed"`
+	Failed    []autoMatchFailure `json:"failed"`
+}
+
+func (s *Server) tmdbAutoMatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var request revisionInput
+	if !decode(w, r, &request) {
+		return
+	}
+	if !s.tmdb.Configured() {
+		s.tmdbError(w, metadata.ErrNotConfigured)
+		return
+	}
+	snapshot, err := s.store.Read()
+	if err != nil {
+		errorJSON(w, err)
+		return
+	}
+	if snapshot.Revision != request.Revision {
+		writeJSON(w, http.StatusConflict, snapshot)
+		return
+	}
+
+	result := autoMatchResult{Snapshot: snapshot, NoResults: []string{}, Failed: []autoMatchFailure{}}
+	matches := make([]store.MatchInput, 0)
+	for _, record := range snapshot.Records {
+		if record.MediaRef != nil {
+			continue
+		}
+		result.Total++
+		if len(record.Warnings) > 0 {
+			result.Failed = append(result.Failed, autoMatchFailure{Title: record.Title, Error: "记录格式有警告"})
+			continue
+		}
+		results, searchErr := s.tmdb.Search(r.Context(), record.Title, "all")
+		if searchErr != nil {
+			result.Failed = append(result.Failed, autoMatchFailure{Title: record.Title, Error: searchErr.Error()})
+			continue
+		}
+		if len(results) == 0 {
+			result.NoResults = append(result.NoResults, record.Title)
+			continue
+		}
+		first := results[0]
+		mediaType := "tm"
+		if first.Type == "tv" {
+			mediaType = "tv"
+		}
+		mediaRef := domain.MediaRef{Type: mediaType, ID: first.ID}
+		if _, fetchErr := s.tmdb.Fetch(r.Context(), s.metadata, mediaRef); fetchErr != nil {
+			result.Failed = append(result.Failed, autoMatchFailure{Title: record.Title, Error: fetchErr.Error()})
+			continue
+		}
+		matches = append(matches, store.MatchInput{Key: record.Key, Type: mediaType, ID: first.ID})
+	}
+
+	if len(matches) > 0 {
+		snapshot, err = s.store.BatchMatch(request.Revision, matches)
+		if errors.Is(err, store.ErrConflict) {
+			writeJSON(w, http.StatusConflict, snapshot)
+			return
+		}
+		if err != nil {
+			errorJSON(w, err)
+			return
+		}
+	} else {
+		snapshot, err = s.store.Read()
+		if err != nil {
+			errorJSON(w, err)
+			return
+		}
+		if snapshot.Revision != request.Revision {
+			writeJSON(w, http.StatusConflict, snapshot)
+			return
+		}
+	}
+	s.metadata.Enrich(&snapshot)
+	result.Snapshot = snapshot
+	result.Matched = len(matches)
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) tmdbRefreshMissing(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var request revisionInput
+	if !decode(w, r, &request) {
+		return
+	}
+	if !s.tmdb.Configured() {
+		s.tmdbError(w, metadata.ErrNotConfigured)
+		return
+	}
+	snapshot, err := s.store.Read()
+	if err != nil {
+		errorJSON(w, err)
+		return
+	}
+	if snapshot.Revision != request.Revision {
+		writeJSON(w, http.StatusConflict, snapshot)
+		return
+	}
+	s.metadata.Enrich(&snapshot)
+
+	result := refreshMetadataResult{Snapshot: snapshot, Failed: []autoMatchFailure{}}
+	for _, record := range snapshot.Records {
+		if record.MediaRef == nil || (record.MetadataState != "missing" && record.MetadataState != "invalid") {
+			continue
+		}
+		result.Total++
+		if _, fetchErr := s.tmdb.Fetch(r.Context(), s.metadata, *record.MediaRef); fetchErr != nil {
+			result.Failed = append(result.Failed, autoMatchFailure{Title: record.Title, Error: fetchErr.Error()})
+			continue
+		}
+		result.Refreshed++
+	}
+
+	latest, err := s.store.Read()
+	if err != nil {
+		errorJSON(w, err)
+		return
+	}
+	if latest.Revision != request.Revision {
+		writeJSON(w, http.StatusConflict, latest)
+		return
+	}
+	s.metadata.Enrich(&latest)
+	result.Snapshot = latest
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) matchTmdb(w http.ResponseWriter, r *http.Request, key string, request matchInput) {
