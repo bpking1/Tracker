@@ -412,6 +412,15 @@ TMDB 匹配流程：
 
 TMDB API Key 必须通过环境变量或本地私有配置提供，不能提交到源码仓库。
 
+### 11.1 Emby 播放
+
+- Emby 服务通过 `EMBY_SERVERS` JSON 数组配置，每项包含服务地址、API Key 和可选名称；数组顺序即查询优先级。
+- 后端使用记录中的 `tm:` 或 `tv:` ID 查询 Emby 的 TMDB Provider ID，逐个服务查询，命中第一条结果后停止。
+- 电影命中 `Movie` 后返回静态视频流地址，并在不下载完整视频的前提下解析一次重定向。
+- 剧集命中 `Series` 后打开 Emby Web 详情页，由用户选择具体集数，不猜测要播放的剧集进度。
+- Emby 地址和 API Key 只从环境变量或未纳入版本控制的 `.env` 读取，不写入 `traker.txt`、元数据缓存或前端配置。
+- 详情页只在存在 TMDB ID 时显示播放按钮；未配置、未找到和上游请求失败必须显示明确错误。
+
 ## 12. API 草案
 
 ```text
@@ -423,6 +432,7 @@ DELETE /api/records/{key}
 GET    /api/tmdb/search?q=...&type=movie|tv|all
 POST   /api/records/{key}/tmdb-match
 
+GET    /api/play-link?type=tm|tv&q={tmdbId}
 GET    /api/events
 GET    /api/images/{cacheKey}
 ```

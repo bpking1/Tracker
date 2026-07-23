@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { AlertTriangle, Film, Link2, LoaderCircle, Pencil, RefreshCw, Star, Trash2 } from 'lucide-react'
+import { AlertTriangle, Film, Link2, LoaderCircle, Pencil, Play, RefreshCw, Star, Trash2 } from 'lucide-react'
 import { statusMeta } from '../status'
-import type { RecordItem } from '../types'
+import type { PlayLink, RecordItem } from '../types'
 import { Modal } from './Modal'
 
 interface DetailModalProps {
@@ -12,12 +12,33 @@ interface DetailModalProps {
   onRefresh: () => Promise<void>
   onDelete: () => void
   onSearchActor: (actor: string) => void
+  onPlay: () => Promise<PlayLink>
 }
 
-export function DetailModal({ record, onClose, onEdit, onMatch, onRefresh, onDelete, onSearchActor }: DetailModalProps) {
+export function DetailModal({ record, onClose, onEdit, onMatch, onRefresh, onDelete, onSearchActor, onPlay }: DetailModalProps) {
   const [refreshing, setRefreshing] = useState(false)
+  const [playing, setPlaying] = useState(false)
+  const [playError, setPlayError] = useState('')
   const meta = statusMeta[record.status]
   const refresh = async () => { setRefreshing(true); await onRefresh(); setRefreshing(false) }
+  const play = async () => {
+    const popup = window.open('about:blank', '_blank')
+    if (popup) popup.opener = null
+    setPlaying(true)
+    setPlayError('')
+    try {
+      const link = await onPlay()
+      const target = link.redirectedUrl || link.playUrl
+      if (!target) throw new Error('Emby 没有返回播放地址')
+      if (!popup) throw new Error('浏览器阻止了播放窗口，请允许此站点打开新窗口')
+      popup.location.replace(target)
+    } catch (cause) {
+      popup?.close()
+      setPlayError(cause instanceof Error ? cause.message : '无法获取 Emby 播放地址')
+    } finally {
+      setPlaying(false)
+    }
+  }
   return <Modal title="影片详情" onClose={onClose} wide>
     <div className="detail-layout">
       <div className="detail-poster">{record.metadata?.posterUrl ? <img src={record.metadata.posterUrl} alt={`${record.title}海报`} /> : <div><Film size={36} /><span>暂无海报</span></div>}</div>
@@ -31,6 +52,7 @@ export function DetailModal({ record, onClose, onEdit, onMatch, onRefresh, onDel
         {record.warnings.length > 0 && <div className="detail-warning"><AlertTriangle size={16} /><span>{record.warnings.map((warning) => warning.message).join('；')}</span></div>}
       </div>
     </div>
-    <div className="detail-actions"><button className="danger-text-button" onClick={onDelete}><Trash2 size={16} />删除</button><div><button className="secondary-button" onClick={onMatch}><Link2 size={16} />匹配 TMDB</button>{record.mediaRef && <button className="secondary-button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}刷新详情</button>}<button className="primary-button" onClick={onEdit}><Pencil size={16} />编辑记录</button></div></div>
+    {playError && <p className="play-error"><AlertTriangle size={15} />{playError}</p>}
+    <div className="detail-actions"><button className="danger-text-button" onClick={onDelete}><Trash2 size={16} />删除</button><div>{record.mediaRef && <button className="secondary-button play-button" onClick={() => void play()} disabled={playing} title={record.mediaRef.type === 'tv' ? '在 Emby 中打开剧集' : '从 Emby 播放'}>{playing ? <LoaderCircle className="spin" size={16} /> : <Play size={16} fill="currentColor" />}{playing ? '正在查找' : '播放'}</button>}<button className="secondary-button" onClick={onMatch}><Link2 size={16} />匹配 TMDB</button>{record.mediaRef && <button className="secondary-button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}刷新详情</button>}<button className="primary-button" onClick={onEdit}><Pencil size={16} />编辑记录</button></div></div>
   </Modal>
 }

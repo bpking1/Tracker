@@ -1,4 +1,4 @@
-import type { AppConfig, AutoMatchResult, RecordInput, RefreshMetadataResult, Snapshot, TmdbResult } from './types'
+import type { AppConfig, AutoMatchResult, MediaRef, PlayLink, RecordInput, RefreshMetadataResult, Snapshot, TmdbResult } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -44,5 +44,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ revision }),
     }),
+  playLink: (mediaRef: MediaRef) =>
+    request<PlayLink>(`/api/play-link?type=${mediaRef.type}&q=${mediaRef.id}`),
   config: () => request<AppConfig>('/api/config'),
 }

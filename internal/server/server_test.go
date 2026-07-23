@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"traker/internal/domain"
+	"traker/internal/emby"
 	"traker/internal/metadata"
 	"traker/internal/store"
 )
@@ -33,6 +35,19 @@ func (fakeMetadataClient) Fetch(_ context.Context, cache *metadata.Cache, mediaR
 	return item, cache.Put(item)
 }
 
+type fakePlaybackClient struct {
+	configured bool
+	link       emby.PlayLink
+	err        error
+	received   domain.MediaRef
+}
+
+func (client *fakePlaybackClient) Configured() bool { return client.configured }
+func (client *fakePlaybackClient) PlayLink(_ context.Context, mediaRef domain.MediaRef) (emby.PlayLink, error) {
+	client.received = mediaRef
+	return client.link, client.err
+}
+
 func TestAutoMatchUsesFirstResultAndWritesOnce(t *testing.T) {
 	dataFile := filepath.Join(t.TempDir(), "traker.txt")
 	if err := os.WriteFile(dataFile, []byte("- 自动匹配\n- 没有结果\nx 已有 ID tm:7\n"), 0o644); err != nil {
@@ -46,7 +61,7 @@ func TestAutoMatchUsesFirstResultAndWritesOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := newHandler(recordStore, nil, cache, fakeMetadataClient{})
+	handler := newHandler(recordStore, nil, cache, fakeMetadataClient{}, nil)
 	snapshot, err := recordStore.Read()
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +106,7 @@ func TestConfigReturnsAbsoluteDataPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := newHandler(recordStore, nil, cache, fakeMetadataClient{})
+	handler := newHandler(recordStore, nil, cache, fakeMetadataClient{}, nil)
 	request := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -122,7 +137,7 @@ func TestRefreshMissingMetadataDoesNotRewriteDataFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := newHandler(recordStore, nil, cache, fakeMetadataClient{})
+	handler := newHandler(recordStore, nil, cache, fakeMetadataClient{}, nil)
 	snapshot, err := recordStore.Read()
 	if err != nil {
 		t.Fatal(err)
@@ -153,5 +168,72 @@ func TestRefreshMissingMetadataDoesNotRewriteDataFile(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(dataFile), "backups")); !os.IsNotExist(err) {
 		t.Fatalf("metadata refresh should not create text backups: %v", err)
+	}
+}
+
+func TestPlayLinkReturnsConfiguredEmbyResult(t *testing.T) {
+	dataFile := filepath.Join(t.TempDir(), "traker.txt")
+	recordStore, err := store.New(dataFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache, err := metadata.NewCache(dataFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	playback := &fakePlaybackClient{
+		configured: true,
+		link:       emby.PlayLink{PlayURL: "https://emby.example/stream", ItemName: "测试影片", PlaybackMode: "stream"},
+	}
+	handler := newHandler(recordStore, nil, cache, fakeMetadataClient{}, playback)
+	request := httptest.NewRequest(http.MethodGet, "/api/play-link?type=tm&q=278", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", response.Code, response.Body.String())
+	}
+	if playback.received != (domain.MediaRef{Type: "tm", ID: 278}) {
+		t.Fatalf("unexpected media reference: %#v", playback.received)
+	}
+	var link emby.PlayLink
+	if err := json.NewDecoder(response.Body).Decode(&link); err != nil {
+		t.Fatal(err)
+	}
+	if link.PlayURL != playback.link.PlayURL || link.ItemName != playback.link.ItemName {
+		t.Fatalf("unexpected response: %#v", link)
+	}
+}
+
+func TestPlayLinkStatusCodes(t *testing.T) {
+	dataFile := filepath.Join(t.TempDir(), "traker.txt")
+	recordStore, err := store.New(dataFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache, err := metadata.NewCache(dataFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name       string
+		client     playbackClient
+		path       string
+		wantStatus int
+	}{
+		{name: "unconfigured", client: nil, path: "/api/play-link?type=tm&q=1", wantStatus: http.StatusServiceUnavailable},
+		{name: "invalid query", client: &fakePlaybackClient{configured: true}, path: "/api/play-link?type=bad&q=0", wantStatus: http.StatusBadRequest},
+		{name: "not found", client: &fakePlaybackClient{configured: true, err: emby.ErrNotFound}, path: "/api/play-link?type=tv&q=2", wantStatus: http.StatusNotFound},
+		{name: "upstream failure", client: &fakePlaybackClient{configured: true, err: errors.New("upstream")}, path: "/api/play-link?type=tm&q=3", wantStatus: http.StatusBadGateway},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := newHandler(recordStore, nil, cache, fakeMetadataClient{}, test.client)
+			request := httptest.NewRequest(http.MethodGet, test.path, nil)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("unexpected status %d: %s", response.Code, response.Body.String())
+			}
+		})
 	}
 }

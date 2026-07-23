@@ -69,10 +69,23 @@ go run ./cmd/traker
 
 在记录菜单中选择“匹配 TMDB”，确认结果后会自动把 `tm:<id>` 或 `tv:<id>` 写入 `traker.txt`。标准标题、简介、演员和公共评分保存在 `data/cache/metadata.json`，海报保存在 `data/cache/images/`；这些缓存可以随时删除并重新抓取。
 
+## 配置 Emby 播放
+
+使用 `EMBY_SERVERS` JSON 数组配置一个或多个 Emby 服务，数组顺序就是查询顺序：
+
+```dotenv
+EMBY_SERVERS=[{"name":"家中","url":"http://127.0.0.1:8096","apiKey":"你的_Emby_API_Key"},{"name":"备用","url":"https://emby.example.com","apiKey":"另一个_Emby_API_Key"}]
+```
+
+每项的 `name` 可以省略，`url` 可以带或不带末尾的 `/emby`。配置只在后端读取，不会显示在设置页。修改 `.env` 后需要重启 Go 服务。
+
+影视详情页会在记录包含 `tm:` 或 `tv:` ID 时显示“播放”按钮。后端按配置顺序查询，命中第一条结果后停止；电影打开直接流地址，剧集打开 Emby Web 的剧集详情页以选择具体集数。所有服务均无结果时，错误会直接显示在详情页。
+
 ## 验证
 
 ```powershell
 go test ./...
+bun run test
 bun run build
 ```
 

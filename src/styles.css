@@ -191,6 +191,9 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .detail-section blockquote { margin: 14px 0 0; border-left: 2px solid #9baa9e; padding: 2px 0 2px 12px; color: #626860; font-family: Georgia, "Noto Serif SC", serif; font-size: 13px; font-style: italic; line-height: 1.65; }
 .detail-warning { display: flex; gap: 8px; margin-top: 17px; border-radius: 5px; background: #fff4ce; padding: 9px 10px; color: #775f19; font-size: 11px; line-height: 1.5; }
 .detail-warning svg { flex: 0 0 auto; }
+.play-error { display: flex; align-items: center; gap: 7px; margin: 0 20px 12px; border-radius: 5px; background: #fff1f0; padding: 9px 10px; color: #883b38; font-size: 11px; }
+.play-error svg { flex: 0 0 auto; }
+.play-button { color: #356849; }
 .detail-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid #e0e3dc; padding: 15px 20px; }
 .detail-actions > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .danger-text-button { display: inline-flex; min-height: 36px; align-items: center; gap: 7px; border: 0; border-radius: 5px; background: transparent; padding: 0 8px; color: #a34845; font-size: 12px; font-weight: 650; }

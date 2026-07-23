@@ -63,6 +63,14 @@ export interface AppConfig {
   dataFile: string
 }
 
+export interface PlayLink {
+  playUrl: string
+  redirectedUrl: string
+  itemName: string
+  serverName: string
+  playbackMode: 'stream' | 'series'
+}
+
 export interface AutoMatchFailure {
   title: string
   error: string

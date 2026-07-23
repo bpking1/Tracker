@@ -11,10 +11,12 @@ import (
 	"mime"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
 	"traker/internal/domain"
+	"traker/internal/emby"
 	"traker/internal/metadata"
 	"traker/internal/store"
 )
@@ -24,6 +26,7 @@ type Server struct {
 	static   fs.FS
 	metadata *metadata.Cache
 	tmdb     metadataClient
+	emby     playbackClient
 }
 
 type metadataClient interface {
@@ -32,16 +35,25 @@ type metadataClient interface {
 	Fetch(context.Context, *metadata.Cache, domain.MediaRef) (domain.MediaMetadata, error)
 }
 
+type playbackClient interface {
+	Configured() bool
+	PlayLink(context.Context, domain.MediaRef) (emby.PlayLink, error)
+}
+
 func New(recordStore *store.Store, static fs.FS) (http.Handler, error) {
 	metadataCache, err := metadata.NewCache(recordStore.Path())
 	if err != nil {
 		return nil, err
 	}
-	return newHandler(recordStore, static, metadataCache, metadata.NewClientFromEnvironment()), nil
+	embyClient, err := emby.NewClientFromEnvironment()
+	if err != nil {
+		return nil, err
+	}
+	return newHandler(recordStore, static, metadataCache, metadata.NewClientFromEnvironment(), embyClient), nil
 }
 
-func newHandler(recordStore *store.Store, static fs.FS, metadataCache *metadata.Cache, tmdb metadataClient) http.Handler {
-	s := &Server{store: recordStore, static: static, metadata: metadataCache, tmdb: tmdb}
+func newHandler(recordStore *store.Store, static fs.FS, metadataCache *metadata.Cache, tmdb metadataClient, embyClient playbackClient) http.Handler {
+	s := &Server{store: recordStore, static: static, metadata: metadataCache, tmdb: tmdb, emby: embyClient}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/records", s.records)
 	mux.HandleFunc("/api/records/", s.recordByKey)
@@ -49,6 +61,7 @@ func newHandler(recordStore *store.Store, static fs.FS, metadataCache *metadata.
 	mux.HandleFunc("/api/tmdb/config", s.tmdbConfig)
 	mux.HandleFunc("/api/tmdb/auto-match", s.tmdbAutoMatch)
 	mux.HandleFunc("/api/tmdb/refresh-missing", s.tmdbRefreshMissing)
+	mux.HandleFunc("/api/play-link", s.playLink)
 	mux.HandleFunc("/api/config", s.config)
 	mux.HandleFunc("/api/images/", s.image)
 	mux.HandleFunc("/api/events", s.events)
@@ -178,6 +191,40 @@ func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"dataFile": s.store.Path()})
+}
+
+func (s *Server) playLink(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	if s.emby == nil || !s.emby.Configured() {
+		errorJSONStatus(w, http.StatusServiceUnavailable, emby.ErrNotConfigured)
+		return
+	}
+	mediaType := strings.TrimSpace(r.URL.Query().Get("type"))
+	if mediaType == "" {
+		mediaType = "tm"
+	}
+	id, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("q")))
+	if err != nil || id <= 0 || (mediaType != "tm" && mediaType != "tv") {
+		errorJSONStatus(w, http.StatusBadRequest, errors.New("需要有效的 TMDB ID 和类型"))
+		return
+	}
+	link, err := s.emby.PlayLink(r.Context(), domain.MediaRef{Type: mediaType, ID: id})
+	if errors.Is(err, emby.ErrNotConfigured) {
+		errorJSONStatus(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	if errors.Is(err, emby.ErrNotFound) {
+		errorJSONStatus(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		errorJSONStatus(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, link)
 }
 
 type autoMatchFailure struct {
