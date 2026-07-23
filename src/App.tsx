@@ -70,7 +70,7 @@ export default function App() {
   const [batchMatching, setBatchMatching] = useState(false)
   const [batchSummary, setBatchSummary] = useState('')
   const [duplicateWarning, setDuplicateWarning] = useState('')
-  const [player, setPlayer] = useState<{ title: string; url: string; posterUrl?: string; serverName: string } | null>(null)
+  const [player, setPlayer] = useState<{ title: string; url: string; mediaId: string; posterUrl?: string; serverName: string } | null>(null)
 
   const load = async () => {
     try { setSnapshot(await api.records()); setError(''); setExternalChange(false) }
@@ -236,7 +236,7 @@ export default function App() {
         const link: PlayLink = await api.playLink(detail.mediaRef!)
         const url = link.redirectedUrl || link.playUrl
         if (!url) throw new Error('Emby 没有返回播放地址')
-        setPlayer({ title: link.itemName || detail.title, url, posterUrl: detail.metadata?.posterUrl, serverName: link.serverName })
+        setPlayer({ title: link.itemName || detail.title, url, mediaId: `${detail.mediaRef!.type}:${detail.mediaRef!.id}`, posterUrl: detail.metadata?.posterUrl, serverName: link.serverName })
       }} />}
       {editor && snapshot && <EditorModal record={editor.record} revision={snapshot.revision} changed={externalChange} onClose={() => setEditor(null)} onSaved={handleMutation} onError={handleFailure} />}
       {matching && snapshot && <TmdbModal record={matching} revision={snapshot.revision} onClose={() => setMatching(null)} onSaved={handleTmdbMatch} onError={handleFailure} />}

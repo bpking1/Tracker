@@ -5,12 +5,13 @@ import { AlertTriangle, X } from 'lucide-react'
 interface PlayerModalProps {
   title: string
   url: string
+  mediaId: string
   posterUrl?: string
   serverName: string
   onClose: () => void
 }
 
-export function PlayerModal({ title, url, posterUrl, serverName, onClose }: PlayerModalProps) {
+export function PlayerModal({ title, url, mediaId, posterUrl, serverName, onClose }: PlayerModalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [error, setError] = useState('')
 
@@ -23,11 +24,15 @@ export function PlayerModal({ title, url, posterUrl, serverName, onClose }: Play
       if (!active || !containerRef.current) return
       const ArtplayerConstructor = artplayerModule.default
       player = new ArtplayerConstructor({
+        id: mediaId,
         container: containerRef.current,
         url,
         poster: posterUrl,
         autoplay: true,
-        volume: 0.7,
+        volume: 0.5,
+        pip: true,
+        miniProgressBar: true,
+        autoPlayback: true,
         playbackRate: true,
         setting: true,
         hotkey: true,
@@ -50,7 +55,7 @@ export function PlayerModal({ title, url, posterUrl, serverName, onClose }: Play
       active = false
       player?.destroy(true)
     }
-  }, [posterUrl, url])
+  }, [mediaId, posterUrl, url])
 
   return <div className="player-backdrop" role="presentation">
     <section className="player-dialog" role="dialog" aria-modal="true" aria-label={`播放 ${title}`}>
