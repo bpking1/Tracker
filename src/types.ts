@@ -68,7 +68,7 @@ export interface PlayLink {
   redirectedUrl: string
   itemName: string
   serverName: string
-  playbackMode: 'stream' | 'series'
+  playbackMode: 'stream'
 }
 
 export interface AutoMatchFailure {

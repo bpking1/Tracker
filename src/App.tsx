@@ -26,6 +26,7 @@ import {
 import { api } from './api'
 import { DetailModal } from './components/DetailModal'
 import { Modal } from './components/Modal'
+import { PlayerModal } from './components/PlayerModal'
 import { PosterRecord, TextRecordRow } from './components/RecordViews'
 import { TimelineView } from './components/TimelineView'
 import {
@@ -38,7 +39,7 @@ import {
   type SortKey,
 } from './recordFilters'
 import { statusMeta } from './status'
-import type { AppConfig, MediaRef, RecordInput, RecordItem, Snapshot, Status, TmdbResult } from './types'
+import type { AppConfig, MediaRef, PlayLink, RecordInput, RecordItem, Snapshot, Status, TmdbResult } from './types'
 
 const emptyInput = (): RecordInput => ({
   status: 'planned', title: '', mediaRef: null, completedAt: null, createdAt: today(), rating: null,
@@ -69,6 +70,7 @@ export default function App() {
   const [batchMatching, setBatchMatching] = useState(false)
   const [batchSummary, setBatchSummary] = useState('')
   const [duplicateWarning, setDuplicateWarning] = useState('')
+  const [player, setPlayer] = useState<{ title: string; url: string; posterUrl?: string; serverName: string } | null>(null)
 
   const load = async () => {
     try { setSnapshot(await api.records()); setError(''); setExternalChange(false) }
@@ -230,11 +232,17 @@ export default function App() {
         )}</> : loading ? <Loading /> : <TimelineView records={snapshot?.records || []} onOpen={setDetail} />}
       </main>
 
-      {detail && snapshot && <DetailModal record={detail} onClose={() => setDetail(null)} onEdit={() => { setDetail(null); setEditor({ record: detail }) }} onMatch={() => { setDetail(null); setMatching(detail) }} onRefresh={async () => { try { const next = await api.refreshTmdb(snapshot.revision, detail.key); setSnapshot(next); setDetail(next.records.find((item) => item.key === detail.key) || detail) } catch (cause) { handleFailure(cause) } }} onDelete={() => { setDetail(null); setDeleting(detail) }} onSearchActor={searchActor} onPlay={() => api.playLink(detail.mediaRef!)} />}
+      {detail && snapshot && <DetailModal record={detail} onClose={() => setDetail(null)} onEdit={() => { setDetail(null); setEditor({ record: detail }) }} onMatch={() => { setDetail(null); setMatching(detail) }} onRefresh={async () => { try { const next = await api.refreshTmdb(snapshot.revision, detail.key); setSnapshot(next); setDetail(next.records.find((item) => item.key === detail.key) || detail) } catch (cause) { handleFailure(cause) } }} onDelete={() => { setDetail(null); setDeleting(detail) }} onSearchActor={searchActor} onPlay={async () => {
+        const link: PlayLink = await api.playLink(detail.mediaRef!)
+        const url = link.redirectedUrl || link.playUrl
+        if (!url) throw new Error('Emby 没有返回播放地址')
+        setPlayer({ title: link.itemName || detail.title, url, posterUrl: detail.metadata?.posterUrl, serverName: link.serverName })
+      }} />}
       {editor && snapshot && <EditorModal record={editor.record} revision={snapshot.revision} changed={externalChange} onClose={() => setEditor(null)} onSaved={handleMutation} onError={handleFailure} />}
       {matching && snapshot && <TmdbModal record={matching} revision={snapshot.revision} onClose={() => setMatching(null)} onSaved={handleTmdbMatch} onError={handleFailure} />}
       {deleting && snapshot && <ConfirmDelete record={deleting} onClose={() => setDeleting(null)} onConfirm={async () => { try { handleMutation(await api.remove(snapshot.revision, deleting.key)) } catch (cause) { handleFailure(cause) } }} />}
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {player && <PlayerModal {...player} onClose={() => setPlayer(null)} />}
     </div>
   )
 }

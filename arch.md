@@ -89,14 +89,14 @@ TMDB 返回的标题不能自动覆盖用户填写的标题。
 - 单条或批量匹配产生重复 `tm:`/`tv:` ID 时提示用户，但不阻止保存或自动合并，因为重复记录可能代表重看。
 - 将 `tm:` 或 `tv:` ID 写回对应文本行。
 - 缓存海报、简介和主要演员信息。
+- 按 TMDB ID 顺序查询多个 Emby 服务，并在电影详情页使用 ArtPlayer 与 Mediabunny Proxy 直接播放媒体。
 - 检测外部文本修改并刷新界面。
 
 ### 3.2 暂不纳入核心架构
 
 - 多用户和社交功能。
 - 云端账户体系。
-- 内置流媒体播放。
-- Emby、Plex 或其他媒体服务器集成。
+- Plex 或其他媒体服务器集成。
 - 自动跨设备冲突合并。
 - 复杂推荐算法。
 
@@ -415,11 +415,13 @@ TMDB API Key 必须通过环境变量或本地私有配置提供，不能提交�
 ### 11.1 Emby 播放
 
 - Emby 服务通过 `EMBY_SERVERS` JSON 数组配置，每项包含服务地址、API Key 和可选名称；数组顺序即查询优先级。
-- 后端使用记录中的 `tm:` 或 `tv:` ID 查询 Emby 的 TMDB Provider ID，逐个服务查询，命中第一条结果后停止。
+- 后端使用电影记录中的 `tm:` ID 查询 Emby 的 TMDB Provider ID，逐个服务查询，命中第一条结果后停止。
 - 电影命中 `Movie` 后返回静态视频流地址，并在不下载完整视频的前提下解析一次重定向。
-- 剧集命中 `Series` 后打开 Emby Web 详情页，由用户选择具体集数，不猜测要播放的剧集进度。
+- 前端使用 ArtPlayer 与 Mediabunny Proxy 在站内读取和播放最终视频地址；Traker 后端不提供 Range 代理，也不提供跳转到 Emby Web 的备用入口。
+- 跨域视频源必须允许页面来源访问并支持 Range 请求；容器可由 Mediabunny 解析，音视频编码仍受浏览器 WebCodecs 支持范围限制。
+- `tv:` 只能定位剧集系列，不能确定具体集数，因此剧集详情暂不显示播放入口。
 - Emby 地址和 API Key 只从环境变量或未纳入版本控制的 `.env` 读取，不写入 `traker.txt`、元数据缓存或前端配置。
-- 详情页只在存在 TMDB ID 时显示播放按钮；未配置、未找到和上游请求失败必须显示明确错误。
+- 电影详情页只在存在 TMDB ID 时显示播放按钮；未配置、未找到、跨域读取、解码和上游请求失败必须显示明确错误。
 
 ## 12. API 草案
 
@@ -432,7 +434,7 @@ DELETE /api/records/{key}
 GET    /api/tmdb/search?q=...&type=movie|tv|all
 POST   /api/records/{key}/tmdb-match
 
-GET    /api/play-link?type=tm|tv&q={tmdbId}
+GET    /api/play-link?type=tm&q={tmdbId}
 GET    /api/events
 GET    /api/images/{cacheKey}
 ```

@@ -19,6 +19,7 @@ import (
 var (
 	ErrNotConfigured = errors.New("Emby 尚未配置")
 	ErrNotFound      = errors.New("Emby 媒体库中未找到对应影片")
+	ErrUnsupported   = errors.New("剧集需要指定具体集数，暂不支持直接播放")
 )
 
 type ServerConfig struct {
@@ -41,10 +42,9 @@ type Client struct {
 }
 
 type server struct {
-	name    string
-	baseURL *url.URL
-	apiURL  *url.URL
-	apiKey  string
+	name   string
+	apiURL *url.URL
+	apiKey string
 }
 
 type searchResult struct {
@@ -69,7 +69,7 @@ func NewClientFromEnvironment() (*Client, error) {
 func NewClient(configs []ServerConfig, httpClient *http.Client) (*Client, error) {
 	servers := make([]server, 0, len(configs))
 	for index, config := range configs {
-		baseURL, apiURL, err := parseServerURL(config.URL)
+		apiURL, err := parseServerURL(config.URL)
 		if err != nil {
 			return nil, fmt.Errorf("Emby 服务 %d 地址无效: %w", index+1, err)
 		}
@@ -80,7 +80,7 @@ func NewClient(configs []ServerConfig, httpClient *http.Client) (*Client, error)
 		if name == "" {
 			name = fmt.Sprintf("Emby %d", index+1)
 		}
-		servers = append(servers, server{name: name, baseURL: baseURL, apiURL: apiURL, apiKey: config.APIKey})
+		servers = append(servers, server{name: name, apiURL: apiURL, apiKey: config.APIKey})
 	}
 	if httpClient == nil {
 		httpClient = defaultHTTPClient()
@@ -92,32 +92,29 @@ func defaultHTTPClient() *http.Client {
 	return &http.Client{Timeout: 12 * time.Second}
 }
 
-func parseServerURL(raw string) (*url.URL, *url.URL, error) {
+func parseServerURL(raw string) (*url.URL, error) {
 	parsed, err := url.Parse(strings.TrimRight(strings.TrimSpace(raw), "/"))
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return nil, nil, errors.New("仅支持 http 或 https")
+		return nil, errors.New("仅支持 http 或 https")
 	}
 	if parsed.Host == "" {
-		return nil, nil, errors.New("缺少主机名")
+		return nil, errors.New("缺少主机名")
 	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, nil, errors.New("地址不能包含查询参数或片段")
+		return nil, errors.New("地址不能包含查询参数或片段")
 	}
 
-	baseURL := *parsed
 	apiURL := *parsed
 	cleanPath := strings.TrimRight(apiURL.Path, "/")
 	if !strings.HasSuffix(strings.ToLower(cleanPath), "/emby") {
 		apiURL.Path = cleanPath + "/emby"
-		baseURL.Path = strings.TrimRight(baseURL.Path, "/")
 	} else {
 		apiURL.Path = cleanPath
-		baseURL.Path = cleanPath[:len(cleanPath)-len("/emby")]
 	}
-	return &baseURL, &apiURL, nil
+	return &apiURL, nil
 }
 
 func (c *Client) Configured() bool {
@@ -131,28 +128,19 @@ func (c *Client) PlayLink(ctx context.Context, mediaRef domain.MediaRef) (PlayLi
 	if (mediaRef.Type != "tm" && mediaRef.Type != "tv") || mediaRef.ID <= 0 {
 		return PlayLink{}, errors.New("无效的 TMDB ID")
 	}
-
-	itemType := "Movie"
 	if mediaRef.Type == "tv" {
-		itemType = "Series"
+		return PlayLink{}, ErrUnsupported
 	}
+
 	failures := make([]string, 0)
 	for _, configuredServer := range c.servers {
-		item, err := c.search(ctx, configuredServer, itemType, mediaRef.ID)
+		item, err := c.search(ctx, configuredServer, "Movie", mediaRef.ID)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s 查询失败", configuredServer.name))
 			continue
 		}
 		if item == nil {
 			continue
-		}
-		if mediaRef.Type == "tv" {
-			return PlayLink{
-				PlayURL:      webItemURL(configuredServer, item.ID),
-				ItemName:     item.Name,
-				ServerName:   configuredServer.name,
-				PlaybackMode: "series",
-			}, nil
 		}
 		playURL := streamURL(configuredServer, item.ID)
 		redirectURL, err := c.resolveRedirect(ctx, playURL)
@@ -218,13 +206,6 @@ func streamURL(configuredServer server, itemID string) string {
 	query.Set("api_key", configuredServer.apiKey)
 	query.Set("static", "true")
 	target.RawQuery = query.Encode()
-	return target.String()
-}
-
-func webItemURL(configuredServer server, itemID string) string {
-	target := *configuredServer.baseURL
-	target.Path = strings.TrimRight(target.Path, "/") + "/web/index.html"
-	target.Fragment = "!/item?id=" + url.QueryEscape(itemID)
 	return target.String()
 }
 

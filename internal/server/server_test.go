@@ -223,6 +223,7 @@ func TestPlayLinkStatusCodes(t *testing.T) {
 		{name: "unconfigured", client: nil, path: "/api/play-link?type=tm&q=1", wantStatus: http.StatusServiceUnavailable},
 		{name: "invalid query", client: &fakePlaybackClient{configured: true}, path: "/api/play-link?type=bad&q=0", wantStatus: http.StatusBadRequest},
 		{name: "not found", client: &fakePlaybackClient{configured: true, err: emby.ErrNotFound}, path: "/api/play-link?type=tv&q=2", wantStatus: http.StatusNotFound},
+		{name: "unsupported media type", client: &fakePlaybackClient{configured: true, err: emby.ErrUnsupported}, path: "/api/play-link?type=tv&q=2", wantStatus: http.StatusBadRequest},
 		{name: "upstream failure", client: &fakePlaybackClient{configured: true, err: errors.New("upstream")}, path: "/api/play-link?type=tm&q=3", wantStatus: http.StatusBadGateway},
 	}
 	for _, test := range tests {

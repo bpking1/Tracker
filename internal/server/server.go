@@ -220,6 +220,10 @@ func (s *Server) playLink(w http.ResponseWriter, r *http.Request) {
 		errorJSONStatus(w, http.StatusNotFound, err)
 		return
 	}
+	if errors.Is(err, emby.ErrUnsupported) {
+		errorJSONStatus(w, http.StatusBadRequest, err)
+		return
+	}
 	if err != nil {
 		errorJSONStatus(w, http.StatusBadGateway, err)
 		return

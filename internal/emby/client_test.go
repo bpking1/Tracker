@@ -72,34 +72,13 @@ func TestPlayLinkQueriesServersInOrderAndResolvesMovieRedirect(t *testing.T) {
 	}
 }
 
-func TestPlayLinkReturnsSeriesWebPage(t *testing.T) {
-	var streamRequested atomic.Bool
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/emby/Items" {
-			streamRequested.Store(true)
-			http.NotFound(w, r)
-			return
-		}
-		if got := r.URL.Query().Get("IncludeItemTypes"); got != "Series" {
-			t.Errorf("unexpected item type %q", got)
-		}
-		_, _ = w.Write([]byte(`{"Items":[{"Id":"series-1","Name":"黑镜"}]}`))
-	}))
-	defer server.Close()
-
-	client, err := NewClient([]ServerConfig{{URL: server.URL, APIKey: "key"}}, &http.Client{Timeout: time.Second})
+func TestPlayLinkRejectsSeries(t *testing.T) {
+	client, err := NewClient([]ServerConfig{{URL: "https://emby.example", APIKey: "key"}}, &http.Client{Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
-	link, err := client.PlayLink(context.Background(), domain.MediaRef{Type: "tv", ID: 42009})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if streamRequested.Load() {
-		t.Fatal("series should not request a video stream")
-	}
-	if link.PlaybackMode != "series" || link.PlayURL != server.URL+"/web/index.html#!/item?id=series-1" {
-		t.Fatalf("unexpected series link: %#v", link)
+	if _, err := client.PlayLink(context.Background(), domain.MediaRef{Type: "tv", ID: 42009}); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("expected unsupported series error, got %v", err)
 	}
 }
 
