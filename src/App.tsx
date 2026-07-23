@@ -99,7 +99,15 @@ export default function App() {
       if (mediaTypeFilter !== 'all' && record.mediaRef?.type !== mediaTypeFilter) return false
       if (genreFilter !== 'all' && !record.metadata?.genres.includes(genreFilter)) return false
       if (!normalized) return true
-      return [record.title, record.comment || '', ...record.tags, ...(record.metadata?.genres || []), ...(record.metadata?.cast || [])].some((value) => value.toLocaleLowerCase().includes(normalized))
+      return [
+        record.title,
+        record.metadata?.title || '',
+        record.metadata?.originalTitle || '',
+        record.comment || '',
+        ...record.tags,
+        ...(record.metadata?.genres || []),
+        ...(record.metadata?.cast || []),
+      ].some((value) => value.toLocaleLowerCase().includes(normalized))
     })
     return [...result].sort((a, b) => {
       if (sort === 'rating') return (b.rating || 0) - (a.rating || 0)
@@ -273,7 +281,15 @@ function TimelineView({ records, onOpen }: { records: RecordItem[]; onOpen: (rec
       if (status !== 'all' && record.status !== status) return false
       if (genre !== 'all' && !record.metadata?.genres.includes(genre)) return false
       if (!normalized) return true
-      return [record.title, record.comment || '', ...record.tags, ...(record.metadata?.genres || []), ...(record.metadata?.cast || [])].some((value) => value.toLocaleLowerCase().includes(normalized))
+      return [
+        record.title,
+        record.metadata?.title || '',
+        record.metadata?.originalTitle || '',
+        record.comment || '',
+        ...record.tags,
+        ...(record.metadata?.genres || []),
+        ...(record.metadata?.cast || []),
+      ].some((value) => value.toLocaleLowerCase().includes(normalized))
     }).sort((a, b) => b.completedAt!.localeCompare(a.completedAt!) || b.lineNumber - a.lineNumber)
   }, [dated, query, year, status, genre])
 
