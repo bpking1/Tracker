@@ -18,6 +18,8 @@ import (
 	"traker/internal/domain"
 	"traker/internal/emby"
 	"traker/internal/metadata"
+	"traker/internal/playback"
+	"traker/internal/plex"
 	"traker/internal/store"
 )
 
@@ -26,7 +28,7 @@ type Server struct {
 	static   fs.FS
 	metadata *metadata.Cache
 	tmdb     metadataClient
-	emby     playbackClient
+	playback playbackClient
 }
 
 type metadataClient interface {
@@ -37,7 +39,7 @@ type metadataClient interface {
 
 type playbackClient interface {
 	Configured() bool
-	PlayLink(context.Context, domain.MediaRef) (emby.PlayLink, error)
+	PlayLink(context.Context, domain.MediaRef) (playback.Link, error)
 }
 
 func New(recordStore *store.Store, static fs.FS) (http.Handler, error) {
@@ -49,11 +51,16 @@ func New(recordStore *store.Store, static fs.FS) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newHandler(recordStore, static, metadataCache, metadata.NewClientFromEnvironment(), embyClient), nil
+	plexClient, err := plex.NewClientFromEnvironment()
+	if err != nil {
+		return nil, err
+	}
+	playbackClient := playback.NewClient(embyClient, plexClient)
+	return newHandler(recordStore, static, metadataCache, metadata.NewClientFromEnvironment(), playbackClient), nil
 }
 
-func newHandler(recordStore *store.Store, static fs.FS, metadataCache *metadata.Cache, tmdb metadataClient, embyClient playbackClient) http.Handler {
-	s := &Server{store: recordStore, static: static, metadata: metadataCache, tmdb: tmdb, emby: embyClient}
+func newHandler(recordStore *store.Store, static fs.FS, metadataCache *metadata.Cache, tmdb metadataClient, playbackClient playbackClient) http.Handler {
+	s := &Server{store: recordStore, static: static, metadata: metadataCache, tmdb: tmdb, playback: playbackClient}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/records", s.records)
 	mux.HandleFunc("/api/records/", s.recordByKey)
@@ -198,8 +205,8 @@ func (s *Server) playLink(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	if s.emby == nil || !s.emby.Configured() {
-		errorJSONStatus(w, http.StatusServiceUnavailable, emby.ErrNotConfigured)
+	if s.playback == nil || !s.playback.Configured() {
+		errorJSONStatus(w, http.StatusServiceUnavailable, playback.ErrNotConfigured)
 		return
 	}
 	mediaType := strings.TrimSpace(r.URL.Query().Get("type"))
@@ -211,16 +218,16 @@ func (s *Server) playLink(w http.ResponseWriter, r *http.Request) {
 		errorJSONStatus(w, http.StatusBadRequest, errors.New("需要有效的 TMDB ID 和类型"))
 		return
 	}
-	link, err := s.emby.PlayLink(r.Context(), domain.MediaRef{Type: mediaType, ID: id})
-	if errors.Is(err, emby.ErrNotConfigured) {
+	link, err := s.playback.PlayLink(r.Context(), domain.MediaRef{Type: mediaType, ID: id})
+	if errors.Is(err, playback.ErrNotConfigured) {
 		errorJSONStatus(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	if errors.Is(err, emby.ErrNotFound) {
+	if errors.Is(err, playback.ErrNotFound) {
 		errorJSONStatus(w, http.StatusNotFound, err)
 		return
 	}
-	if errors.Is(err, emby.ErrUnsupported) {
+	if errors.Is(err, playback.ErrUnsupported) {
 		errorJSONStatus(w, http.StatusBadRequest, err)
 		return
 	}

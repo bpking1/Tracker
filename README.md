@@ -69,7 +69,7 @@ go run ./cmd/traker
 
 在记录菜单中选择“匹配 TMDB”，确认结果后会自动把 `tm:<id>` 或 `tv:<id>` 写入 `traker.txt`。标准标题、简介、演员和公共评分保存在 `data/cache/metadata.json`，海报保存在 `data/cache/images/`；这些缓存可以随时删除并重新抓取。
 
-## 配置 Emby 播放
+## 配置媒体库播放
 
 使用 `EMBY_SERVERS` JSON 数组配置一个或多个 Emby 服务，数组顺序就是查询顺序：
 
@@ -79,7 +79,15 @@ EMBY_SERVERS=[{"name":"家中","url":"http://127.0.0.1:8096","apiKey":"你的_Em
 
 每项的 `name` 可以省略，`url` 可以带或不带末尾的 `/emby`。配置只在后端读取，不会显示在设置页。修改 `.env` 后需要重启 Go 服务。
 
-包含 `tm:` ID 的电影会在详情页显示“播放”按钮。后端按配置顺序查询，命中第一条结果后停止；前端使用 ArtPlayer 在站内播放 Emby 返回的静态视频地址。剧集只有 TMDB 剧集 ID、没有具体集 ID，因此暂不显示播放入口。
+Plex 使用独立的 `PLEX_SERVERS` JSON 数组配置：
+
+```dotenv
+PLEX_SERVERS=[{"name":"家中 Plex","url":"http://127.0.0.1:32400","token":"你的_Plex_Token"},{"name":"备用 Plex","url":"https://plex.example.com","token":"另一个_Plex_Token"}]
+```
+
+Plex 的 `name` 同样可以省略。后端先按顺序查询所有 Emby 服务，均未命中时再按顺序查询 Plex 服务；命中第一条结果后停止。Plex 会读取电影资料库的外部 GUID，通过 `tmdb://<id>` 精确匹配，并直接返回第一个媒体 Part 的地址。配置只在后端读取，不会写入前端、数据文件或元数据缓存。
+
+包含 `tm:` ID 的电影会在详情页显示“播放”按钮；前端使用 ArtPlayer 在站内播放媒体库返回的静态视频地址。剧集只有 TMDB 剧集 ID、没有具体集 ID，因此暂不显示播放入口。
 
 视频由浏览器原生 `<video>` 直接读取最终媒体地址，Traker 后端不代理视频数据，也不解析媒体容器。播放器使用 TMDB ID 记忆播放进度，并提供画中画、倍速、迷你进度条和全屏控制。实际能否播放取决于浏览器对文件容器和音视频编码的原生支持；MKV 通常不能保证播放。读取或解码失败时，错误会显示在播放器下方。
 

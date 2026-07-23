@@ -14,8 +14,8 @@ import (
 	"testing"
 
 	"traker/internal/domain"
-	"traker/internal/emby"
 	"traker/internal/metadata"
+	"traker/internal/playback"
 	"traker/internal/store"
 )
 
@@ -37,13 +37,13 @@ func (fakeMetadataClient) Fetch(_ context.Context, cache *metadata.Cache, mediaR
 
 type fakePlaybackClient struct {
 	configured bool
-	link       emby.PlayLink
+	link       playback.Link
 	err        error
 	received   domain.MediaRef
 }
 
 func (client *fakePlaybackClient) Configured() bool { return client.configured }
-func (client *fakePlaybackClient) PlayLink(_ context.Context, mediaRef domain.MediaRef) (emby.PlayLink, error) {
+func (client *fakePlaybackClient) PlayLink(_ context.Context, mediaRef domain.MediaRef) (playback.Link, error) {
 	client.received = mediaRef
 	return client.link, client.err
 }
@@ -171,7 +171,7 @@ func TestRefreshMissingMetadataDoesNotRewriteDataFile(t *testing.T) {
 	}
 }
 
-func TestPlayLinkReturnsConfiguredEmbyResult(t *testing.T) {
+func TestPlayLinkReturnsConfiguredPlaybackResult(t *testing.T) {
 	dataFile := filepath.Join(t.TempDir(), "traker.txt")
 	recordStore, err := store.New(dataFile)
 	if err != nil {
@@ -181,25 +181,25 @@ func TestPlayLinkReturnsConfiguredEmbyResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	playback := &fakePlaybackClient{
+	playbackClient := &fakePlaybackClient{
 		configured: true,
-		link:       emby.PlayLink{PlayURL: "https://emby.example/stream", ItemName: "测试影片", PlaybackMode: "stream"},
+		link:       playback.Link{PlayURL: "https://emby.example/stream", ItemName: "测试影片", PlaybackMode: "stream"},
 	}
-	handler := newHandler(recordStore, nil, cache, fakeMetadataClient{}, playback)
+	handler := newHandler(recordStore, nil, cache, fakeMetadataClient{}, playbackClient)
 	request := httptest.NewRequest(http.MethodGet, "/api/play-link?type=tm&q=278", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("unexpected status %d: %s", response.Code, response.Body.String())
 	}
-	if playback.received != (domain.MediaRef{Type: "tm", ID: 278}) {
-		t.Fatalf("unexpected media reference: %#v", playback.received)
+	if playbackClient.received != (domain.MediaRef{Type: "tm", ID: 278}) {
+		t.Fatalf("unexpected media reference: %#v", playbackClient.received)
 	}
-	var link emby.PlayLink
+	var link playback.Link
 	if err := json.NewDecoder(response.Body).Decode(&link); err != nil {
 		t.Fatal(err)
 	}
-	if link.PlayURL != playback.link.PlayURL || link.ItemName != playback.link.ItemName {
+	if link.PlayURL != playbackClient.link.PlayURL || link.ItemName != playbackClient.link.ItemName {
 		t.Fatalf("unexpected response: %#v", link)
 	}
 }
@@ -222,8 +222,8 @@ func TestPlayLinkStatusCodes(t *testing.T) {
 	}{
 		{name: "unconfigured", client: nil, path: "/api/play-link?type=tm&q=1", wantStatus: http.StatusServiceUnavailable},
 		{name: "invalid query", client: &fakePlaybackClient{configured: true}, path: "/api/play-link?type=bad&q=0", wantStatus: http.StatusBadRequest},
-		{name: "not found", client: &fakePlaybackClient{configured: true, err: emby.ErrNotFound}, path: "/api/play-link?type=tv&q=2", wantStatus: http.StatusNotFound},
-		{name: "unsupported media type", client: &fakePlaybackClient{configured: true, err: emby.ErrUnsupported}, path: "/api/play-link?type=tv&q=2", wantStatus: http.StatusBadRequest},
+		{name: "not found", client: &fakePlaybackClient{configured: true, err: playback.ErrNotFound}, path: "/api/play-link?type=tv&q=2", wantStatus: http.StatusNotFound},
+		{name: "unsupported media type", client: &fakePlaybackClient{configured: true, err: playback.ErrUnsupported}, path: "/api/play-link?type=tv&q=2", wantStatus: http.StatusBadRequest},
 		{name: "upstream failure", client: &fakePlaybackClient{configured: true, err: errors.New("upstream")}, path: "/api/play-link?type=tm&q=3", wantStatus: http.StatusBadGateway},
 	}
 	for _, test := range tests {

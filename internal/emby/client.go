@@ -14,26 +14,19 @@ import (
 	"time"
 
 	"traker/internal/domain"
+	"traker/internal/playback"
 )
 
 var (
-	ErrNotConfigured = errors.New("Emby 尚未配置")
-	ErrNotFound      = errors.New("Emby 媒体库中未找到对应影片")
-	ErrUnsupported   = errors.New("剧集需要指定具体集数，暂不支持直接播放")
+	ErrNotConfigured = playback.ErrNotConfigured
+	ErrNotFound      = playback.ErrNotFound
+	ErrUnsupported   = playback.ErrUnsupported
 )
 
 type ServerConfig struct {
 	Name   string `json:"name"`
 	URL    string `json:"url"`
 	APIKey string `json:"apiKey"`
-}
-
-type PlayLink struct {
-	PlayURL       string `json:"playUrl"`
-	RedirectedURL string `json:"redirectedUrl"`
-	ItemName      string `json:"itemName"`
-	ServerName    string `json:"serverName"`
-	PlaybackMode  string `json:"playbackMode"`
 }
 
 type Client struct {
@@ -121,15 +114,15 @@ func (c *Client) Configured() bool {
 	return c != nil && len(c.servers) > 0
 }
 
-func (c *Client) PlayLink(ctx context.Context, mediaRef domain.MediaRef) (PlayLink, error) {
+func (c *Client) PlayLink(ctx context.Context, mediaRef domain.MediaRef) (playback.Link, error) {
 	if !c.Configured() {
-		return PlayLink{}, ErrNotConfigured
+		return playback.Link{}, ErrNotConfigured
 	}
 	if (mediaRef.Type != "tm" && mediaRef.Type != "tv") || mediaRef.ID <= 0 {
-		return PlayLink{}, errors.New("无效的 TMDB ID")
+		return playback.Link{}, errors.New("无效的 TMDB ID")
 	}
 	if mediaRef.Type == "tv" {
-		return PlayLink{}, ErrUnsupported
+		return playback.Link{}, ErrUnsupported
 	}
 
 	failures := make([]string, 0)
@@ -145,9 +138,9 @@ func (c *Client) PlayLink(ctx context.Context, mediaRef domain.MediaRef) (PlayLi
 		playURL := streamURL(configuredServer, item.ID)
 		redirectURL, err := c.resolveRedirect(ctx, playURL)
 		if err != nil {
-			return PlayLink{}, fmt.Errorf("%s 播放地址不可用: %w", configuredServer.name, err)
+			return playback.Link{}, fmt.Errorf("%s 播放地址不可用: %w", configuredServer.name, err)
 		}
-		return PlayLink{
+		return playback.Link{
 			PlayURL:       playURL,
 			RedirectedURL: redirectURL,
 			ItemName:      item.Name,
@@ -156,9 +149,9 @@ func (c *Client) PlayLink(ctx context.Context, mediaRef domain.MediaRef) (PlayLi
 		}, nil
 	}
 	if len(failures) > 0 {
-		return PlayLink{}, errors.New(strings.Join(failures, "；"))
+		return playback.Link{}, errors.New(strings.Join(failures, "；"))
 	}
-	return PlayLink{}, ErrNotFound
+	return playback.Link{}, ErrNotFound
 }
 
 func (c *Client) search(ctx context.Context, configuredServer server, itemType string, tmdbID int) (*struct {
