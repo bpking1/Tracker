@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
-  CalendarDays,
   Check,
   ChevronDown,
   CircleDot,
@@ -10,12 +9,10 @@ import {
   Film,
   History,
   LayoutGrid,
-  Link2,
   List,
   ListFilter,
   LoaderCircle,
   Menu,
-  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -23,23 +20,25 @@ import {
   Star,
   Tags,
   Trash2,
-  Tv,
   WandSparkles,
   X,
 } from 'lucide-react'
 import { api } from './api'
+import { DetailModal } from './components/DetailModal'
+import { Modal } from './components/Modal'
+import { PosterRecord, TextRecordRow } from './components/RecordViews'
+import { TimelineView } from './components/TimelineView'
+import {
+  duplicateMessage,
+  filterLibraryRecords,
+  newlyDuplicatedMediaRefs,
+  sameMediaRef,
+  type MediaTypeFilter,
+  type MetadataFilter,
+  type SortKey,
+} from './recordFilters'
+import { statusMeta } from './status'
 import type { AppConfig, MediaRef, RecordInput, RecordItem, Snapshot, Status, TmdbResult } from './types'
-
-const statusMeta: Record<Status, { label: string; symbol: string; className: string }> = {
-  planned: { label: '想看', symbol: '−', className: 'status-planned' },
-  watching: { label: '在看', symbol: '›', className: 'status-watching' },
-  watched: { label: '看过', symbol: '✓', className: 'status-watched' },
-  dropped: { label: '弃看', symbol: '×', className: 'status-dropped' },
-}
-
-type SortKey = 'file' | 'completed' | 'created' | 'rating'
-type MetadataFilter = 'all' | 'unmatched' | 'issue'
-type MediaTypeFilter = 'all' | 'tm' | 'tv'
 
 const emptyInput = (): RecordInput => ({
   status: 'planned', title: '', mediaRef: null, completedAt: null, createdAt: today(), rating: null,
@@ -92,29 +91,13 @@ export default function App() {
 
   const records = useMemo(() => {
     if (!snapshot) return []
-    const normalized = query.trim().toLocaleLowerCase()
-    const result = snapshot.records.filter((record) => {
-      if (status !== 'all' && record.status !== status) return false
-      if (metadataFilter === 'unmatched' && record.mediaRef) return false
-      if (metadataFilter === 'issue' && record.metadataState !== 'missing' && record.metadataState !== 'invalid') return false
-      if (mediaTypeFilter !== 'all' && record.mediaRef?.type !== mediaTypeFilter) return false
-      if (genreFilter !== 'all' && !record.metadata?.genres.includes(genreFilter)) return false
-      if (!normalized) return true
-      return [
-        record.title,
-        record.metadata?.title || '',
-        record.metadata?.originalTitle || '',
-        record.comment || '',
-        ...record.tags,
-        ...(record.metadata?.genres || []),
-        ...(record.metadata?.cast || []),
-      ].some((value) => value.toLocaleLowerCase().includes(normalized))
-    })
-    return [...result].sort((a, b) => {
-      if (sort === 'rating') return (b.rating || 0) - (a.rating || 0)
-      if (sort === 'created') return (b.createdAt || '').localeCompare(a.createdAt || '')
-      if (sort === 'completed') return (b.completedAt || '').localeCompare(a.completedAt || '')
-      return a.lineNumber - b.lineNumber
+    return filterLibraryRecords(snapshot.records, {
+      query,
+      status,
+      metadata: metadataFilter,
+      mediaType: mediaTypeFilter,
+      genre: genreFilter,
+      sort,
     })
   }, [snapshot, query, status, metadataFilter, mediaTypeFilter, genreFilter, sort])
 
@@ -273,133 +256,6 @@ function Stat({ label, value, icon, active, onClick }: { label: string; value: n
   return <button className={active ? 'active' : ''} onClick={onClick}><span className="stat-icon">{icon}</span><span><small>{label}</small><strong>{value}</strong></span></button>
 }
 
-function TimelineView({ records, onOpen }: { records: RecordItem[]; onOpen: (record: RecordItem) => void }) {
-  const [query, setQuery] = useState('')
-  const [year, setYear] = useState('all')
-  const [status, setStatus] = useState<'all' | 'watched' | 'dropped'>('all')
-  const [genre, setGenre] = useState('all')
-
-  const dated = useMemo(() => records.filter((record) => (record.status === 'watched' || record.status === 'dropped') && record.completedAt), [records])
-  const years = useMemo(() => Array.from(new Set(dated.map((record) => record.completedAt!.slice(0, 4)))).sort((a, b) => b.localeCompare(a)), [dated])
-  const genres = useMemo(() => Array.from(new Set(dated.flatMap((record) => record.metadata?.genres || []))).sort((a, b) => a.localeCompare(b, 'zh-CN')), [dated])
-  const undated = useMemo(() => records.filter((record) => (record.status === 'watched' || record.status === 'dropped') && !record.completedAt).length, [records])
-
-  const filtered = useMemo(() => {
-    const normalized = query.trim().toLocaleLowerCase()
-    return dated.filter((record) => {
-      if (year !== 'all' && !record.completedAt!.startsWith(year)) return false
-      if (status !== 'all' && record.status !== status) return false
-      if (genre !== 'all' && !record.metadata?.genres.includes(genre)) return false
-      if (!normalized) return true
-      return [
-        record.title,
-        record.metadata?.title || '',
-        record.metadata?.originalTitle || '',
-        record.comment || '',
-        ...record.tags,
-        ...(record.metadata?.genres || []),
-        ...(record.metadata?.cast || []),
-      ].some((value) => value.toLocaleLowerCase().includes(normalized))
-    }).sort((a, b) => b.completedAt!.localeCompare(a.completedAt!) || b.lineNumber - a.lineNumber)
-  }, [dated, query, year, status, genre])
-
-  const groups = useMemo(() => {
-    const yearGroups = new Map<string, Map<string, RecordItem[]>>()
-    filtered.forEach((record) => {
-      const [recordYear, month] = record.completedAt!.split('.')
-      if (!yearGroups.has(recordYear)) yearGroups.set(recordYear, new Map())
-      const months = yearGroups.get(recordYear)!
-      if (!months.has(month)) months.set(month, [])
-      months.get(month)!.push(record)
-    })
-    return Array.from(yearGroups, ([groupYear, months]) => ({
-      year: groupYear,
-      months: Array.from(months, ([month, items]) => ({ month, items })),
-    }))
-  }, [filtered])
-
-  const watched = filtered.filter((record) => record.status === 'watched').length
-  const dropped = filtered.length - watched
-
-  return <section className="timeline-page">
-    <div className="timeline-stats" aria-label="时间线统计"><span><strong>{filtered.length}</strong><small>当前记录</small></span><span><strong>{watched}</strong><small>看过</small></span><span><strong>{dropped}</strong><small>弃看</small></span></div>
-    <div className="timeline-toolbar">
-      <label className="search-box"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索时间线中的标题、演员、题材或短评" /></label>
-      <label className="select-box"><CalendarDays size={17} /><select value={year} onChange={(event) => setYear(event.target.value)}><option value="all">全部年份</option>{years.map((item) => <option key={item} value={item}>{item} 年</option>)}</select><ChevronDown size={15} /></label>
-      <label className="select-box"><ListFilter size={17} /><select value={status} onChange={(event) => setStatus(event.target.value as 'all' | 'watched' | 'dropped')}><option value="all">看过与弃看</option><option value="watched">只看看过</option><option value="dropped">只看弃看</option></select><ChevronDown size={15} /></label>
-      <label className="select-box genre-select"><Tags size={17} /><select value={genre} onChange={(event) => setGenre(event.target.value)}><option value="all">全部题材</option>{genres.map((item) => <option key={item} value={item}>{item}</option>)}</select><ChevronDown size={15} /></label>
-    </div>
-
-    {groups.length === 0 ? <div className="timeline-empty"><History size={28} /><h2>没有符合条件的观看记录</h2><p>时间线只展示填写了完成或结束日期的看过、弃看记录。</p></div> : <div className="timeline-groups">
-      {groups.map((yearGroup) => <section className="timeline-year" key={yearGroup.year}>
-        <header><h2>{yearGroup.year}</h2><span>{yearGroup.months.reduce((total, month) => total + month.items.length, 0)} 条记录</span></header>
-        {yearGroup.months.map((monthGroup) => <section className="timeline-month" key={`${yearGroup.year}-${monthGroup.month}`}>
-          <h3>{Number(monthGroup.month)} 月</h3>
-          <div className="timeline-track">
-            {monthGroup.items.map((record) => {
-              const meta = statusMeta[record.status]
-              return <button className="timeline-entry" key={record.key} onClick={() => onOpen(record)}>
-                <time dateTime={record.completedAt!.replaceAll('.', '-')}><strong>{Number(record.completedAt!.slice(8, 10))}</strong><small>日</small></time>
-                <span className={`timeline-dot ${meta.className}`} />
-                <span className="timeline-poster">{record.metadata?.posterUrl ? <img src={record.metadata.posterUrl} alt="" /> : <Film size={20} />}</span>
-                <span className="timeline-entry-main">
-                  <span className="timeline-entry-title">{record.title || '未命名记录'}</span>
-                  <span className="timeline-entry-meta"><b className={meta.className}>{meta.label}</b>{record.mediaRef && <span>{record.mediaRef.type === 'tv' ? <Tv size={12} /> : <Film size={12} />}{record.mediaRef.type === 'tv' ? '剧集' : '电影'}</span>}{record.rating && <span className="rating"><Star size={12} fill="currentColor" />{record.rating}</span>}{record.metadata?.genres.slice(0, 2).map((item) => <span className="timeline-genre" key={item}>{item}</span>)}</span>
-                  {record.comment && <span className="timeline-comment">“{record.comment}”</span>}
-                </span>
-                <ChevronDown className="timeline-open" size={17} />
-              </button>
-            })}
-          </div>
-        </section>)}
-      </section>)}
-    </div>}
-    {undated > 0 && <p className="timeline-undated"><AlertTriangle size={15} />另有 {undated} 条看过或弃看记录没有完成/结束日期，未显示在时间线中。</p>}
-  </section>
-}
-
-function TextRecordRow({ record, onOpen }: { record: RecordItem; onOpen: () => void }) {
-  const meta = statusMeta[record.status]
-  const date = record.completedAt || record.createdAt || record.metadata?.releaseDate
-  return <button className="record-row" onClick={onOpen}>
-    <span className={`status-mark ${meta.className}`} title={meta.label}>{meta.symbol}</span>
-    <span className="text-record-content">
-      <span className="text-record-title">{record.title || '未命名记录'}{record.mediaRef && <span className="media-pill">{record.mediaRef.type === 'tv' ? <Tv size={13} /> : <Film size={13} />}{record.mediaRef.type}:{record.mediaRef.id}</span>}{record.warnings.length > 0 && <span className="warning-pill"><AlertTriangle size={13} />{record.warnings.length}</span>}</span>
-      <span className="text-record-meta"><b className={meta.className}>{meta.label}</b>{record.progress && <span>{record.progress}</span>}{date && <span><CalendarDays size={13} />{date}</span>}{record.rating && <span className="rating"><Star size={13} fill="currentColor" />{record.rating}</span>}{record.tags.slice(0, 3).map((tag) => <span className="tag" key={tag}>+{tag}</span>)}{record.comment && <span className="text-comment">“{record.comment}”</span>}</span>
-    </span>
-    <span className="row-open"><ChevronDown size={17} /></span>
-  </button>
-}
-
-function PosterRecord({ record, onOpen }: { record: RecordItem; onOpen: () => void }) {
-  const meta = statusMeta[record.status]
-  return <button className="poster-record" onClick={onOpen}>
-    <span className="poster-record-image">{record.metadata?.posterUrl ? <img src={record.metadata.posterUrl} alt="" /> : <span className="poster-placeholder"><Film size={30} /><small>{record.mediaRef ? '刷新 TMDB 详情' : '尚未匹配 TMDB'}</small></span>}<span className={`poster-status ${meta.className}`}>{meta.symbol}</span>{record.rating && <span className="poster-rating"><Star size={12} fill="currentColor" />{record.rating}</span>}</span>
-    <span className="poster-record-title">{record.title || '未命名记录'}</span>
-  </button>
-}
-
-function DetailModal({ record, onClose, onEdit, onMatch, onRefresh, onDelete, onSearchActor }: { record: RecordItem; onClose: () => void; onEdit: () => void; onMatch: () => void; onRefresh: () => Promise<void>; onDelete: () => void; onSearchActor: (actor: string) => void }) {
-  const [refreshing, setRefreshing] = useState(false)
-  const meta = statusMeta[record.status]
-  const refresh = async () => { setRefreshing(true); await onRefresh(); setRefreshing(false) }
-  return <Modal title="影片详情" onClose={onClose} wide>
-    <div className="detail-layout">
-      <div className="detail-poster">{record.metadata?.posterUrl ? <img src={record.metadata.posterUrl} alt={`${record.title}海报`} /> : <div><Film size={36} /><span>暂无海报</span></div>}</div>
-      <div className="detail-main">
-        <div className="detail-heading"><span className={`detail-status ${meta.className}`}>{meta.symbol}</span><div><h2>{record.title || '未命名记录'}</h2>{record.metadata?.originalTitle && record.metadata.originalTitle !== record.title && <p>{record.metadata.originalTitle}</p>}</div></div>
-        <div className="detail-facts"><span className={meta.className}>{meta.label}</span>{record.mediaRef && <span>{record.mediaRef.type === 'tv' ? '剧集' : '电影'} · {record.mediaRef.type}:{record.mediaRef.id}</span>}{record.metadata?.releaseDate && <span>{record.metadata.releaseDate}</span>}{record.metadata && record.metadata.voteAverage > 0 && <span>TMDB {record.metadata.voteAverage.toFixed(1)}</span>}</div>
-        {record.metadata?.overview && <p className="detail-overview">{record.metadata.overview}</p>}
-        {record.metadata?.genres && record.metadata.genres.length > 0 && <div className="detail-section"><h3>类型题材</h3><div className="detail-tags">{record.metadata.genres.map((genre) => <span key={genre}>{genre}</span>)}</div></div>}
-        {record.metadata?.cast && record.metadata.cast.length > 0 && <div className="detail-section"><h3>主要演员</h3><div className="cast-links">{record.metadata.cast.map((actor) => <button type="button" key={actor} onClick={() => onSearchActor(actor)} title={`搜索 ${actor} 的作品`}>{actor}</button>)}</div></div>}
-        <div className="detail-section"><h3>我的记录</h3><div className="personal-facts">{record.rating && <span className="rating"><Star size={14} fill="currentColor" />{record.rating} / 5</span>}{record.progress && <span>进度 {record.progress}</span>}{record.createdAt && <span>创建于 {record.createdAt}</span>}{record.completedAt && <span>{record.status === 'dropped' ? '结束于' : '完成于'} {record.completedAt}</span>}</div>{record.tags.length > 0 && <div className="detail-tags">{record.tags.map((tag) => <span key={tag}>+{tag}</span>)}</div>}{record.comment && <blockquote>{record.comment}</blockquote>}</div>
-        {record.warnings.length > 0 && <div className="detail-warning"><AlertTriangle size={16} /><span>{record.warnings.map((warning) => warning.message).join('；')}</span></div>}
-      </div>
-    </div>
-    <div className="detail-actions"><button className="danger-text-button" onClick={onDelete}><Trash2 size={16} />删除</button><div><button className="secondary-button" onClick={onMatch}><Link2 size={16} />匹配 TMDB</button>{record.mediaRef && <button className="secondary-button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}刷新详情</button>}<button className="primary-button" onClick={onEdit}><Pencil size={16} />编辑记录</button></div></div>
-  </Modal>
-}
-
 function EditorModal({ record, revision, changed, onClose, onSaved, onError }: { record?: RecordItem; revision: string; changed: boolean; onClose: () => void; onSaved: (value: Snapshot) => void; onError: (cause: unknown) => void }) {
   const [form, setForm] = useState<RecordInput>(record ? toInput(record) : emptyInput())
   const [tags, setTags] = useState(record?.tags.join(' ') || '')
@@ -466,33 +322,10 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
 }
 
 function ConfirmDelete({ record, onClose, onConfirm }: { record: RecordItem; onClose: () => void; onConfirm: () => void }) { return <Modal title="删除记录" onClose={onClose}><div className="confirm-body"><div className="danger-icon"><Trash2 size={22} /></div><p>确定删除“<strong>{record.title}</strong>”吗？写入前会自动保留备份。</p><div className="modal-actions"><button className="secondary-button" onClick={onClose}>取消</button><button className="danger-button" onClick={onConfirm}><Trash2 size={17} />删除记录</button></div></div></Modal> }
-function Modal({ title, onClose, wide, children }: { title: string; onClose: () => void; wide?: boolean; children: React.ReactNode }) { return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className={`modal ${wide ? 'modal-wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button className="icon-button" onClick={onClose} aria-label="关闭"><X size={19} /></button></header>{children}</section></div> }
 function Field({ label, wide, children }: { label: string; wide?: boolean; children: React.ReactNode }) { return <label className={`field ${wide ? 'wide' : ''}`}><span>{label}</span>{children}</label> }
 function Notice({ text, action, onAction, tone }: { text: string; action: string; onAction: () => void; tone?: 'error' | 'success' }) { return <div className={`notice ${tone || ''}`}>{tone === 'success' ? <Check size={18} /> : <AlertTriangle size={18} />}<span>{text}</span><button onClick={onAction}>{action}{tone !== 'success' && <RefreshCw size={15} />}</button></div> }
 function Loading() { return <div className="loading"><LoaderCircle className="spin" size={26} /><span>正在读取片单</span></div> }
 function Empty({ hasQuery, onAdd }: { hasQuery: boolean; onAdd: () => void }) { return <div className="empty"><div><Film size={26} /></div><h2>{hasQuery ? '没有符合条件的记录' : '片单还是空的'}</h2><p>{hasQuery ? '试试更换关键词或筛选条件。' : '添加第一部想看的电影或剧集。'}</p>{!hasQuery && <button className="primary-button" onClick={onAdd}><Plus size={18} />添加记录</button>}</div> }
-function sameMediaRef(left: MediaRef | null, right: MediaRef) { return left?.type === right.type && left.id === right.id }
-function mediaRefCounts(records: RecordItem[]) {
-  const counts = new Map<string, { mediaRef: MediaRef; count: number }>()
-  records.forEach((record) => {
-    if (!record.mediaRef) return
-    const key = `${record.mediaRef.type}:${record.mediaRef.id}`
-    const current = counts.get(key)
-    counts.set(key, { mediaRef: record.mediaRef, count: (current?.count || 0) + 1 })
-  })
-  return counts
-}
-function newlyDuplicatedMediaRefs(before: RecordItem[], after: RecordItem[]) {
-  const previous = mediaRefCounts(before)
-  return Array.from(mediaRefCounts(after).entries())
-    .filter(([key, value]) => value.count > 1 && (previous.get(key)?.count || 0) < 2)
-    .map(([, value]) => value.mediaRef)
-}
-function duplicateMessage(mediaRefs: MediaRef[]) {
-  const refs = mediaRefs.slice(0, 3).map((mediaRef) => `${mediaRef.type}:${mediaRef.id}`).join('、')
-  const remaining = mediaRefs.length > 3 ? ` 等 ${mediaRefs.length} 组` : ''
-  return `片单中已存在相同 TMDB 记录（${refs}${remaining}），本次匹配仍已保存。`
-}
 function toInput(record: RecordItem): RecordInput { return { status: record.status, title: record.title, mediaRef: record.mediaRef, completedAt: record.completedAt, createdAt: record.createdAt, rating: record.rating, progress: record.progress, tags: record.tags, comment: record.comment } }
 function today() { const date = new Date(); return `${date.getFullYear()}.${String(date.getMonth() + 1).padStart(2, '0')}.${String(date.getDate()).padStart(2, '0')}` }
 function toHtmlDate(value: string | null) { return value?.replaceAll('.', '-') || '' }

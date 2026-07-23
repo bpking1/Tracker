@@ -23,6 +23,12 @@ bun run dev
 
 打开 `http://127.0.0.1:5173`。首次启动后端会自动创建 `data/traker.txt`。
 
+前端纯函数测试可运行：
+
+```powershell
+bun run test
+```
+
 ## 单进程运行
 
 ```powershell
