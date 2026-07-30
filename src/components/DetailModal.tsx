@@ -13,11 +13,12 @@ interface DetailModalProps {
   onRefresh: () => Promise<void>
   onDelete: () => void
   onSearchActor: (actor: string) => void
+  onOpenSeries: () => void
   onResolvePlayLink: () => Promise<PlayLink>
   onPlay: (link: PlayLink) => void
 }
 
-export function DetailModal({ record, onClose, onEdit, onMatch, onRefresh, onDelete, onSearchActor, onResolvePlayLink, onPlay }: DetailModalProps) {
+export function DetailModal({ record, onClose, onEdit, onMatch, onRefresh, onDelete, onSearchActor, onOpenSeries, onResolvePlayLink, onPlay }: DetailModalProps) {
   const [refreshing, setRefreshing] = useState(false)
   const [playing, setPlaying] = useState(false)
   const [playError, setPlayError] = useState('')
@@ -37,7 +38,7 @@ export function DetailModal({ record, onClose, onEdit, onMatch, onRefresh, onDel
       setPlayLink(next)
       return next
     } catch (cause) {
-      setPlayError(cause instanceof Error ? cause.message : '无法获取 Emby 播放地址')
+      setPlayError(cause instanceof Error ? cause.message : '无法获取媒体库播放地址')
       return null
     } finally {
       setPlaying(false)
@@ -89,7 +90,7 @@ export function DetailModal({ record, onClose, onEdit, onMatch, onRefresh, onDel
       </div>
     </div>
     {playError && <p className="play-error"><AlertTriangle size={15} />{playError}</p>}
-    <div className="detail-actions"><button className="danger-text-button" onClick={onDelete}><Trash2 size={16} />删除</button><div>{record.mediaRef?.type === 'tm' && <div className="play-split" ref={playMenuRef}><button className="secondary-button play-button" onClick={() => void play()} disabled={playing} title="从 Emby 播放">{playing ? <LoaderCircle className="spin" size={16} /> : <Play size={16} fill="currentColor" />}{playing ? '正在查找' : '播放'}</button><button className="secondary-button play-menu-toggle" onClick={togglePlayMenu} aria-label="选择外部播放器" aria-haspopup="menu" aria-expanded={playMenuOpen}><ChevronDown size={15} /></button>{playMenuOpen && <div className="play-menu" role="menu">{playing ? <div className="play-menu-loading"><LoaderCircle className="spin" size={15} />正在获取播放地址</div> : playLink ? <><button role="menuitem" onClick={() => launchExternal(potPlayerProtocol(playUrl))}><MonitorPlay size={16} /><span>PotPlayer 播放</span></button><button role="menuitem" onClick={() => launchExternal(mpvHandlerProtocol(playUrl))}><ExternalLink size={16} /><span>mpv-handler 播放</span></button><button role="menuitem" onClick={() => void copyPlayUrl()}><Copy size={16} /><span>{copied ? '已复制播放地址' : '复制播放地址'}</span></button></> : <div className="play-menu-loading play-menu-failed">播放地址不可用</div>}</div>}</div>}<button className="secondary-button" onClick={onMatch}><Link2 size={16} />匹配 TMDB</button>{record.mediaRef && <button className="secondary-button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}刷新详情</button>}<button className="primary-button" onClick={onEdit}><Pencil size={16} />编辑记录</button></div></div>
+    <div className="detail-actions"><button className="danger-text-button" onClick={onDelete}><Trash2 size={16} />删除</button><div>{record.mediaRef?.type === 'tm' && <div className="play-split" ref={playMenuRef}><button className="secondary-button play-button" onClick={() => void play()} disabled={playing} title="播放影片">{playing ? <LoaderCircle className="spin" size={16} /> : <Play size={16} fill="currentColor" />}{playing ? '正在查找' : '播放'}</button><button className="secondary-button play-menu-toggle" onClick={togglePlayMenu} aria-label="选择外部播放器" aria-haspopup="menu" aria-expanded={playMenuOpen}><ChevronDown size={15} /></button>{playMenuOpen && <div className="play-menu" role="menu">{playing ? <div className="play-menu-loading"><LoaderCircle className="spin" size={15} />正在获取播放地址</div> : playLink ? <><button role="menuitem" onClick={() => launchExternal(potPlayerProtocol(playUrl))}><MonitorPlay size={16} /><span>PotPlayer 播放</span></button><button role="menuitem" onClick={() => launchExternal(mpvHandlerProtocol(playUrl))}><ExternalLink size={16} /><span>mpv-handler 播放</span></button><button role="menuitem" onClick={() => void copyPlayUrl()}><Copy size={16} /><span>{copied ? '已复制播放地址' : '复制播放地址'}</span></button></> : <div className="play-menu-loading play-menu-failed">播放地址不可用</div>}</div>}</div>}{record.mediaRef?.type === 'tv' && <button className="secondary-button play-button" onClick={onOpenSeries}><Play size={16} fill="currentColor" />选择剧集</button>}<button className="secondary-button" onClick={onMatch}><Link2 size={16} />匹配 TMDB</button>{record.mediaRef && <button className="secondary-button" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}刷新详情</button>}<button className="primary-button" onClick={onEdit}><Pencil size={16} />编辑记录</button></div></div>
   </Modal>
 }
 

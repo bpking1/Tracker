@@ -1,4 +1,4 @@
-import type { AppConfig, AutoMatchResult, MediaRef, PlayLink, RecordInput, RefreshMetadataResult, Snapshot, TmdbResult } from './types'
+import type { AppConfig, AutoMatchResult, MediaRef, PlexSeriesCatalog, PlayLink, RecordInput, RefreshMetadataResult, Snapshot, TmdbResult } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -12,6 +12,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw error
   }
   return payload as T
+}
+
+const plexSeriesRequests = new Map<number, Promise<PlexSeriesCatalog>>()
+
+function plexSeries(tmdbId: number, refresh = false) {
+  if (refresh) plexSeriesRequests.delete(tmdbId)
+  const cached = plexSeriesRequests.get(tmdbId)
+  if (cached) return cached
+
+  const pending = request<PlexSeriesCatalog>(`/api/plex/series?q=${tmdbId}`)
+  plexSeriesRequests.set(tmdbId, pending)
+  void pending.catch(() => {
+    if (plexSeriesRequests.get(tmdbId) === pending) plexSeriesRequests.delete(tmdbId)
+  })
+  return pending
 }
 
 export const api = {
@@ -46,5 +61,8 @@ export const api = {
     }),
   playLink: (mediaRef: MediaRef) =>
     request<PlayLink>(`/api/play-link?type=${mediaRef.type}&q=${mediaRef.id}`),
+  plexSeries,
+  plexEpisodePlayLink: (serverId: string, seriesKey: string, episodeKey: string) =>
+    request<PlayLink>(`/api/plex/episode-play-link?server=${encodeURIComponent(serverId)}&series=${encodeURIComponent(seriesKey)}&episode=${encodeURIComponent(episodeKey)}`),
   config: () => request<AppConfig>('/api/config'),
 }

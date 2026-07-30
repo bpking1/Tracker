@@ -28,6 +28,7 @@ import { DetailModal } from './components/DetailModal'
 import { Modal } from './components/Modal'
 import { PlayerModal } from './components/PlayerModal'
 import { PosterRecord, TextRecordRow } from './components/RecordViews'
+import { SeriesPlayerModal } from './components/SeriesPlayerModal'
 import { TimelineView } from './components/TimelineView'
 import {
   duplicateMessage,
@@ -39,6 +40,7 @@ import {
   type SortKey,
 } from './recordFilters'
 import { statusMeta } from './status'
+import { episodeCode } from './seriesPlayback'
 import type { AppConfig, MediaRef, PlayLink, RecordInput, RecordItem, Snapshot, Status, TmdbResult } from './types'
 
 const emptyInput = (): RecordInput => ({
@@ -62,6 +64,7 @@ export default function App() {
   const [editor, setEditor] = useState<{ record?: RecordItem } | null>(null)
   const [matching, setMatching] = useState<RecordItem | null>(null)
   const [deleting, setDeleting] = useState<RecordItem | null>(null)
+  const [seriesRecord, setSeriesRecord] = useState<RecordItem | null>(null)
   const [mobileNav, setMobileNav] = useState(false)
   const [externalChange, setExternalChange] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -232,7 +235,7 @@ export default function App() {
         )}</> : loading ? <Loading /> : <TimelineView records={snapshot?.records || []} onOpen={setDetail} />}
       </main>
 
-      {detail && snapshot && <DetailModal record={detail} onClose={() => setDetail(null)} onEdit={() => { setDetail(null); setEditor({ record: detail }) }} onMatch={() => { setDetail(null); setMatching(detail) }} onRefresh={async () => { try { const next = await api.refreshTmdb(snapshot.revision, detail.key); setSnapshot(next); setDetail(next.records.find((item) => item.key === detail.key) || detail) } catch (cause) { handleFailure(cause) } }} onDelete={() => { setDetail(null); setDeleting(detail) }} onSearchActor={searchActor} onResolvePlayLink={() => api.playLink(detail.mediaRef!)} onPlay={(link: PlayLink) => {
+      {detail && snapshot && <DetailModal record={detail} onClose={() => setDetail(null)} onEdit={() => { setDetail(null); setEditor({ record: detail }) }} onMatch={() => { setDetail(null); setMatching(detail) }} onRefresh={async () => { try { const next = await api.refreshTmdb(snapshot.revision, detail.key); setSnapshot(next); setDetail(next.records.find((item) => item.key === detail.key) || detail) } catch (cause) { handleFailure(cause) } }} onDelete={() => { setDetail(null); setDeleting(detail) }} onSearchActor={searchActor} onOpenSeries={() => { setSeriesRecord(detail); setDetail(null) }} onResolvePlayLink={() => api.playLink(detail.mediaRef!)} onPlay={(link: PlayLink) => {
         const url = link.redirectedUrl || link.playUrl
         setPlayer({ title: link.itemName || detail.title, url, mediaId: `${detail.mediaRef!.type}:${detail.mediaRef!.id}`, posterUrl: detail.metadata?.posterUrl, serverName: link.serverName })
       }} />}
@@ -240,6 +243,11 @@ export default function App() {
       {matching && snapshot && <TmdbModal record={matching} revision={snapshot.revision} onClose={() => setMatching(null)} onSaved={handleTmdbMatch} onError={handleFailure} />}
       {deleting && snapshot && <ConfirmDelete record={deleting} onClose={() => setDeleting(null)} onConfirm={async () => { try { handleMutation(await api.remove(snapshot.revision, deleting.key)) } catch (cause) { handleFailure(cause) } }} />}
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {seriesRecord && <SeriesPlayerModal record={seriesRecord} onClose={() => setSeriesRecord(null)} onPlay={(link, episode) => {
+        const url = link.redirectedUrl || link.playUrl
+        const code = episodeCode(episode)
+        setPlayer({ title: `${seriesRecord.title} · ${code} ${episode.title}`.trim(), url, mediaId: `tv:${seriesRecord.mediaRef!.id}:s${episode.seasonNumber}:e${episode.episodeNumber}`, posterUrl: seriesRecord.metadata?.posterUrl, serverName: link.serverName })
+      }} />}
       {player && <PlayerModal {...player} onClose={() => setPlayer(null)} />}
     </div>
   )

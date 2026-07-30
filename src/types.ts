@@ -71,6 +71,29 @@ export interface PlayLink {
   playbackMode: 'stream'
 }
 
+export interface PlexEpisode {
+  ratingKey: string
+  seasonNumber: number
+  episodeNumber: number
+  title: string
+  duration: number
+  airDate: string
+}
+
+export interface PlexSeason {
+  number: number
+  title: string
+  episodes: PlexEpisode[]
+}
+
+export interface PlexSeriesCatalog {
+  seriesTitle: string
+  serverId: string
+  serverName: string
+  seriesKey: string
+  seasons: PlexSeason[]
+}
+
 export interface AutoMatchFailure {
   title: string
   error: string
