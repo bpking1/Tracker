@@ -416,17 +416,20 @@ TMDB API Key 必须通过环境变量或本地私有配置提供，不能提交�
 
 - Emby 服务通过 `EMBY_SERVERS` JSON 数组配置，每项包含服务地址、API Key 和可选名称；数组顺序即查询优先级。
 - Plex 服务通过 `PLEX_SERVERS` JSON 数组配置，每项包含服务地址、Token 和可选名称；数组顺序即查询优先级。
-- 播放来源优先级通过 `PLAYBACK_PROVIDER_ORDER` 配置，默认 `emby,plex`，也可设为 `plex,emby`；必须同时且各包含一次两个来源。来源内部仍按各自服务数组的顺序查询。
-- 后端使用电影记录中的 `tm:` ID 查询媒体库：Emby 查询 TMDB Provider ID，Plex 查询电影资料库的外部 TMDB GUID，命中第一条结果后停止。
+- 电影播放来源优先级通过 `PLAYBACK_PROVIDER_ORDER` 配置，默认 `emby,plex`，也可设为 `plex,emby`；必须同时且各包含一次两个来源。来源内部仍按各自服务数组的顺序查询。剧集播放始终只使用 Plex，不受该配置影响。
+- 后端使用电影记录中的 `tm:` ID 查询媒体库：Emby 查询 TMDB Provider ID；Plex 不支持直接按 TMDB ID 搜索，因此先用 TMDB 标准名称和原始名称调用 Hub 搜索，再读取候选详情的外部 TMDB GUID 做精确校验，命中第一条结果后停止。
 - 电影命中 `Movie` 后返回静态视频流地址，并在不下载完整视频的前提下解析一次重定向。
 - Plex 命中后返回第一个媒体 Part 的直连地址；如果资料库列表未包含 Part，则补充请求该条目的详情。Plex Token 作为播放地址查询参数传给浏览器或外部播放器，Traker 不代理媒体数据。
 - 前端使用 ArtPlayer 与浏览器原生 `<video>` 在站内播放最终视频地址；Traker 后端不提供 Range 代理，也不提供跳转到 Emby Web 的备用入口。
-- ArtPlayer 使用稳定的 `tm:<id>` 标识记忆播放进度，并提供画中画、倍速、迷你进度条和全屏控制。
+- ArtPlayer 为电影使用稳定的 `tm:<id>` 标识，为剧集单集使用 `tv:<id>:s<season>:e<episode>` 标识记忆播放进度，并提供画中画、倍速、迷你进度条和全屏控制。
+- 播放器允许用户选择 UTF-8 编码的本地 SRT、VTT 或 ASS 字幕，并启用字幕时间偏移设置。字幕通过浏览器 Blob URL 交给 ArtPlayer，切换、关闭或销毁播放器时必须回收 URL；字幕文件不上传到后端。ASS 仅使用 ArtPlayer 内置的 VTT 转换，不承诺保留复杂样式和特效。
 - 播放按钮使用点击式分割菜单提供 PotPlayer、mpv-handler 和复制地址；展开菜单时预取并缓存播放地址，用户点击播放器时同步触发已注册的本地协议。
 - 前端不解析或转换媒体容器，能否播放取决于浏览器对文件容器和音视频编码的原生支持，MKV 不保证可播放。
-- `tv:` 只能定位剧集系列，不能确定具体集数，因此剧集详情暂不显示播放入口。
+- `tv:` 只定位剧集系列。剧集详情通过 Plex 专属入口先按名称搜索 show 候选并以 TMDB GUID 校验，再通过 Plex `ratingKey` 读取 season 和 episode children。选集接口返回 Plex 服务标识、show key 和按季分组的集目录，不向前端暴露 Plex URL 或 Token。
+- 用户选择 episode 后，后端按服务标识和 episode `ratingKey` 重新读取详情，确认其 `grandparentRatingKey` 属于当前 show，再返回第一个媒体 Part 的直连地址。剧集不回退到 Emby；记录中的 `SxxExx` 进度只用于默认定位。
+- 前端按 `tv:` TMDB ID 在页面会话内缓存剧集目录 Promise，以复用已完成结果并合并并发请求；请求失败时清除缓存。选集界面提供显式刷新操作，用于 Plex 新增或调整剧集后强制重新查询。
 - Emby 地址和 API Key、Plex 地址和 Token 只从环境变量或未纳入版本控制的 `.env` 读取，不写入 `traker.txt`、元数据缓存或前端配置。
-- 电影详情页只在存在 TMDB ID 时显示播放按钮；未配置、未找到、跨域读取、解码和上游请求失败必须显示明确错误。
+- 电影详情页只在存在 `tm:` ID 时显示播放按钮；剧集详情页只在存在 `tv:` ID 时显示 Plex 选集按钮。未配置、未找到、跨域读取、解码和上游请求失败必须显示明确错误。
 
 ## 12. API 草案
 
@@ -440,6 +443,8 @@ GET    /api/tmdb/search?q=...&type=movie|tv|all
 POST   /api/records/{key}/tmdb-match
 
 GET    /api/play-link?type=tm&q={tmdbId}
+GET    /api/plex/series?q={tvTmdbId}
+GET    /api/plex/episode-play-link?server={serverId}&series={showRatingKey}&episode={episodeRatingKey}
 GET    /api/events
 GET    /api/images/{cacheKey}
 ```
