@@ -10,8 +10,9 @@ const (
 )
 
 type MediaRef struct {
-	Type string `json:"type"`
-	ID   int    `json:"id"`
+	Type  string `json:"type"`
+	ID    int    `json:"id"`
+	Title string `json:"title,omitempty"`
 }
 
 type ParseWarning struct {

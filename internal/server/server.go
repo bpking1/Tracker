@@ -29,6 +29,7 @@ type Server struct {
 	metadata *metadata.Cache
 	tmdb     metadataClient
 	playback playbackClient
+	series   seriesPlaybackClient
 }
 
 type metadataClient interface {
@@ -40,6 +41,12 @@ type metadataClient interface {
 type playbackClient interface {
 	Configured() bool
 	PlayLink(context.Context, domain.MediaRef) (playback.Link, error)
+}
+
+type seriesPlaybackClient interface {
+	Configured() bool
+	SeriesCatalog(context.Context, domain.MediaRef) (plex.SeriesCatalog, error)
+	EpisodePlayLink(context.Context, string, string, string) (playback.Link, error)
 }
 
 func New(recordStore *store.Store, static fs.FS) (http.Handler, error) {
@@ -55,6 +62,9 @@ func New(recordStore *store.Store, static fs.FS) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	if plexClient != nil {
+		plexClient.SetMetadataCache(metadataCache)
+	}
 	providerOrder, err := playback.ProviderOrderFromEnvironment()
 	if err != nil {
 		return nil, err
@@ -68,11 +78,14 @@ func New(recordStore *store.Store, static fs.FS) (http.Handler, error) {
 		orderedProviders = append(orderedProviders, providers[providerName])
 	}
 	playbackClient := playback.NewClient(orderedProviders...)
-	return newHandler(recordStore, static, metadataCache, metadata.NewClientFromEnvironment(), playbackClient), nil
+	return newHandler(recordStore, static, metadataCache, metadata.NewClientFromEnvironment(), playbackClient, plexClient), nil
 }
 
-func newHandler(recordStore *store.Store, static fs.FS, metadataCache *metadata.Cache, tmdb metadataClient, playbackClient playbackClient) http.Handler {
+func newHandler(recordStore *store.Store, static fs.FS, metadataCache *metadata.Cache, tmdb metadataClient, playbackClient playbackClient, seriesClients ...seriesPlaybackClient) http.Handler {
 	s := &Server{store: recordStore, static: static, metadata: metadataCache, tmdb: tmdb, playback: playbackClient}
+	if len(seriesClients) > 0 {
+		s.series = seriesClients[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/records", s.records)
 	mux.HandleFunc("/api/records/", s.recordByKey)
@@ -81,6 +94,8 @@ func newHandler(recordStore *store.Store, static fs.FS, metadataCache *metadata.
 	mux.HandleFunc("/api/tmdb/auto-match", s.tmdbAutoMatch)
 	mux.HandleFunc("/api/tmdb/refresh-missing", s.tmdbRefreshMissing)
 	mux.HandleFunc("/api/play-link", s.playLink)
+	mux.HandleFunc("/api/plex/series", s.plexSeries)
+	mux.HandleFunc("/api/plex/episode-play-link", s.plexEpisodePlayLink)
 	mux.HandleFunc("/api/config", s.config)
 	mux.HandleFunc("/api/images/", s.image)
 	mux.HandleFunc("/api/events", s.events)
@@ -230,7 +245,78 @@ func (s *Server) playLink(w http.ResponseWriter, r *http.Request) {
 		errorJSONStatus(w, http.StatusBadRequest, errors.New("需要有效的 TMDB ID 和类型"))
 		return
 	}
-	link, err := s.playback.PlayLink(r.Context(), domain.MediaRef{Type: mediaType, ID: id})
+	mediaRef := s.mediaRefWithTitle(r.Context(), domain.MediaRef{Type: mediaType, ID: id})
+	link, err := s.playback.PlayLink(r.Context(), mediaRef)
+	writePlaybackResult(w, link, err)
+}
+
+func (s *Server) mediaRefWithTitle(ctx context.Context, mediaRef domain.MediaRef) domain.MediaRef {
+	if s.metadata != nil {
+		if meta, ok := s.metadata.Get(mediaRef); ok && meta.Title != "" {
+			mediaRef.Title = meta.Title
+		} else if s.tmdb != nil && s.tmdb.Configured() {
+			if meta, err := s.tmdb.Fetch(ctx, s.metadata, mediaRef); err == nil && meta.Title != "" {
+				mediaRef.Title = meta.Title
+			}
+		}
+	}
+	return mediaRef
+}
+
+func (s *Server) plexSeries(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	if s.series == nil || !s.series.Configured() {
+		errorJSONStatus(w, http.StatusServiceUnavailable, playback.ErrNotConfigured)
+		return
+	}
+	id, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("q")))
+	if err != nil || id <= 0 {
+		errorJSONStatus(w, http.StatusBadRequest, errors.New("需要有效的剧集 TMDB ID"))
+		return
+	}
+	mediaRef := s.mediaRefWithTitle(r.Context(), domain.MediaRef{Type: "tv", ID: id})
+	catalog, err := s.series.SeriesCatalog(r.Context(), mediaRef)
+	if errors.Is(err, playback.ErrNotConfigured) {
+		errorJSONStatus(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	if errors.Is(err, playback.ErrNotFound) {
+		errorJSONStatus(w, http.StatusNotFound, errors.New("Plex 媒体库中未找到对应剧集或可播放集数"))
+		return
+	}
+	if err != nil {
+		errorJSONStatus(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, catalog)
+}
+
+func (s *Server) plexEpisodePlayLink(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	if s.series == nil || !s.series.Configured() {
+		errorJSONStatus(w, http.StatusServiceUnavailable, playback.ErrNotConfigured)
+		return
+	}
+	link, err := s.series.EpisodePlayLink(
+		r.Context(),
+		strings.TrimSpace(r.URL.Query().Get("server")),
+		strings.TrimSpace(r.URL.Query().Get("series")),
+		strings.TrimSpace(r.URL.Query().Get("episode")),
+	)
+	if errors.Is(err, plex.ErrInvalidSeriesRequest) {
+		errorJSONStatus(w, http.StatusBadRequest, err)
+		return
+	}
+	writePlaybackResult(w, link, err)
+}
+
+func writePlaybackResult(w http.ResponseWriter, link playback.Link, err error) {
 	if errors.Is(err, playback.ErrNotConfigured) {
 		errorJSONStatus(w, http.StatusServiceUnavailable, err)
 		return

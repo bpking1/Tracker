@@ -111,6 +111,13 @@ func (c *Cache) Enrich(snapshot *domain.Snapshot) {
 	}
 }
 
+func (c *Cache) Get(mediaRef domain.MediaRef) (domain.MediaMetadata, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	item, ok := c.items[cacheKey(mediaRef)]
+	return item, ok
+}
+
 func (c *Cache) Put(item domain.MediaMetadata) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

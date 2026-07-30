@@ -16,6 +16,7 @@ import (
 	"traker/internal/domain"
 	"traker/internal/metadata"
 	"traker/internal/playback"
+	"traker/internal/plex"
 	"traker/internal/store"
 )
 
@@ -40,6 +41,30 @@ type fakePlaybackClient struct {
 	link       playback.Link
 	err        error
 	received   domain.MediaRef
+}
+
+type fakeSeriesPlaybackClient struct {
+	configured     bool
+	catalog        plex.SeriesCatalog
+	catalogErr     error
+	link           playback.Link
+	linkErr        error
+	receivedRef    domain.MediaRef
+	receivedServer string
+	receivedSeries string
+	receivedEpisode string
+}
+
+func (client *fakeSeriesPlaybackClient) Configured() bool { return client.configured }
+func (client *fakeSeriesPlaybackClient) SeriesCatalog(_ context.Context, mediaRef domain.MediaRef) (plex.SeriesCatalog, error) {
+	client.receivedRef = mediaRef
+	return client.catalog, client.catalogErr
+}
+func (client *fakeSeriesPlaybackClient) EpisodePlayLink(_ context.Context, serverID, seriesKey, episodeKey string) (playback.Link, error) {
+	client.receivedServer = serverID
+	client.receivedSeries = seriesKey
+	client.receivedEpisode = episodeKey
+	return client.link, client.linkErr
 }
 
 func (client *fakePlaybackClient) Configured() bool { return client.configured }
@@ -192,7 +217,7 @@ func TestPlayLinkReturnsConfiguredPlaybackResult(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("unexpected status %d: %s", response.Code, response.Body.String())
 	}
-	if playbackClient.received != (domain.MediaRef{Type: "tm", ID: 278}) {
+	if playbackClient.received.Type != "tm" || playbackClient.received.ID != 278 {
 		t.Fatalf("unexpected media reference: %#v", playbackClient.received)
 	}
 	var link playback.Link
@@ -229,6 +254,103 @@ func TestPlayLinkStatusCodes(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			handler := newHandler(recordStore, nil, cache, fakeMetadataClient{}, test.client)
+			request := httptest.NewRequest(http.MethodGet, test.path, nil)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("unexpected status %d: %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestPlexSeriesReturnsCatalogAndUsesMetadataTitle(t *testing.T) {
+	dataFile := filepath.Join(t.TempDir(), "traker.txt")
+	recordStore, err := store.New(dataFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache, err := metadata.NewCache(dataFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Put(domain.MediaMetadata{MediaRef: domain.MediaRef{Type: "tv", ID: 1396}, Title: "绝命毒师", Genres: []string{}}); err != nil {
+		t.Fatal(err)
+	}
+	seriesClient := &fakeSeriesPlaybackClient{
+		configured: true,
+		catalog: plex.SeriesCatalog{SeriesTitle: "绝命毒师", ServerID: "0", ServerName: "Plex", SeriesKey: "20", Seasons: []plex.Season{}},
+	}
+	handler := newHandler(recordStore, nil, cache, fakeMetadataClient{}, nil, seriesClient)
+	request := httptest.NewRequest(http.MethodGet, "/api/plex/series?q=1396", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", response.Code, response.Body.String())
+	}
+	if seriesClient.receivedRef.Type != "tv" || seriesClient.receivedRef.ID != 1396 || seriesClient.receivedRef.Title != "绝命毒师" {
+		t.Fatalf("unexpected media reference: %#v", seriesClient.receivedRef)
+	}
+	var catalog plex.SeriesCatalog
+	if err := json.NewDecoder(response.Body).Decode(&catalog); err != nil {
+		t.Fatal(err)
+	}
+	if catalog.SeriesKey != "20" || catalog.ServerName != "Plex" {
+		t.Fatalf("unexpected catalog: %#v", catalog)
+	}
+}
+
+func TestPlexEpisodePlayLinkReturnsResult(t *testing.T) {
+	dataFile := filepath.Join(t.TempDir(), "traker.txt")
+	recordStore, err := store.New(dataFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache, err := metadata.NewCache(dataFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seriesClient := &fakeSeriesPlaybackClient{
+		configured: true,
+		link: playback.Link{PlayURL: "https://plex.example/episode.mkv", ItemName: "试播集", ServerName: "Plex", PlaybackMode: "stream"},
+	}
+	handler := newHandler(recordStore, nil, cache, fakeMetadataClient{}, nil, seriesClient)
+	request := httptest.NewRequest(http.MethodGet, "/api/plex/episode-play-link?server=0&series=20&episode=2011", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", response.Code, response.Body.String())
+	}
+	if seriesClient.receivedServer != "0" || seriesClient.receivedSeries != "20" || seriesClient.receivedEpisode != "2011" {
+		t.Fatalf("unexpected episode request: %#v", seriesClient)
+	}
+}
+
+func TestPlexSeriesStatusCodes(t *testing.T) {
+	dataFile := filepath.Join(t.TempDir(), "traker.txt")
+	recordStore, err := store.New(dataFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache, err := metadata.NewCache(dataFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name       string
+		client     seriesPlaybackClient
+		path       string
+		wantStatus int
+	}{
+		{name: "unconfigured", path: "/api/plex/series?q=1", wantStatus: http.StatusServiceUnavailable},
+		{name: "invalid series", client: &fakeSeriesPlaybackClient{configured: true}, path: "/api/plex/series?q=bad", wantStatus: http.StatusBadRequest},
+		{name: "series not found", client: &fakeSeriesPlaybackClient{configured: true, catalogErr: playback.ErrNotFound}, path: "/api/plex/series?q=1", wantStatus: http.StatusNotFound},
+		{name: "invalid episode", client: &fakeSeriesPlaybackClient{configured: true, linkErr: plex.ErrInvalidSeriesRequest}, path: "/api/plex/episode-play-link?server=x", wantStatus: http.StatusBadRequest},
+		{name: "episode not found", client: &fakeSeriesPlaybackClient{configured: true, linkErr: playback.ErrNotFound}, path: "/api/plex/episode-play-link?server=0&series=1&episode=2", wantStatus: http.StatusNotFound},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := newHandler(recordStore, nil, cache, fakeMetadataClient{}, nil, test.client)
 			request := httptest.NewRequest(http.MethodGet, test.path, nil)
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)

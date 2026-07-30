@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,7 +18,9 @@ import (
 	"traker/internal/playback"
 )
 
-const pageSize = 200
+var ErrInvalidSeriesRequest = errors.New("无效的 Plex 剧集播放参数")
+
+const childrenPageSize = 200
 
 type ServerConfig struct {
 	Name  string `json:"name"`
@@ -25,9 +28,43 @@ type ServerConfig struct {
 	Token string `json:"token"`
 }
 
+type metadataGetter interface {
+	Get(domain.MediaRef) (domain.MediaMetadata, bool)
+}
+
 type Client struct {
-	servers []server
-	http    *http.Client
+	servers   []server
+	http      *http.Client
+	metaCache metadataGetter
+}
+
+type SeriesCatalog struct {
+	SeriesTitle string   `json:"seriesTitle"`
+	ServerID    string   `json:"serverId"`
+	ServerName  string   `json:"serverName"`
+	SeriesKey   string   `json:"seriesKey"`
+	Seasons     []Season `json:"seasons"`
+}
+
+type Season struct {
+	Number   int       `json:"number"`
+	Title    string    `json:"title"`
+	Episodes []Episode `json:"episodes"`
+}
+
+type Episode struct {
+	RatingKey    string `json:"ratingKey"`
+	SeasonNumber int    `json:"seasonNumber"`
+	EpisodeNumber int   `json:"episodeNumber"`
+	Title        string `json:"title"`
+	Duration     int64  `json:"duration"`
+	AirDate      string `json:"airDate"`
+}
+
+func (c *Client) SetMetadataCache(cache metadataGetter) {
+	if c != nil {
+		c.metaCache = cache
+	}
 }
 
 type server struct {
@@ -43,7 +80,13 @@ type mediaContainerResponse struct {
 		Offset    int             `json:"offset"`
 		Directory []directory     `json:"Directory"`
 		Metadata  []mediaMetadata `json:"Metadata"`
+		Hub       []hub           `json:"Hub"`
 	} `json:"MediaContainer"`
+}
+
+type hub struct {
+	Type     string          `json:"type"`
+	Metadata []mediaMetadata `json:"Metadata"`
 }
 
 type directory struct {
@@ -53,9 +96,16 @@ type directory struct {
 }
 
 type mediaMetadata struct {
-	RatingKey string `json:"ratingKey"`
-	Title     string `json:"title"`
-	GUID      string `json:"guid"`
+	RatingKey            string `json:"ratingKey"`
+	ParentRatingKey      string `json:"parentRatingKey"`
+	GrandparentRatingKey string `json:"grandparentRatingKey"`
+	Type                 string `json:"type"`
+	Title                string `json:"title"`
+	GUID                 string `json:"guid"`
+	Index                int    `json:"index"`
+	ParentIndex          int    `json:"parentIndex"`
+	Duration             int64  `json:"duration"`
+	OriginallyAvailableAt string `json:"originallyAvailableAt"`
 	GUIDs     []struct {
 		ID string `json:"id"`
 	} `json:"Guid"`
@@ -126,6 +176,33 @@ func (c *Client) Configured() bool {
 	return c != nil && len(c.servers) > 0
 }
 
+func (c *Client) buildSearchQueries(mediaRef domain.MediaRef) []string {
+	var queries []string
+	addQuery := func(q string) {
+		q = strings.TrimSpace(q)
+		if q == "" {
+			return
+		}
+		for _, existing := range queries {
+			if existing == q {
+				return
+			}
+		}
+		queries = append(queries, q)
+	}
+
+	if mediaRef.Title != "" {
+		addQuery(mediaRef.Title)
+	}
+	if c.metaCache != nil {
+		if meta, ok := c.metaCache.Get(mediaRef); ok {
+			addQuery(meta.Title)
+			addQuery(meta.OriginalTitle)
+		}
+	}
+	return queries
+}
+
 func (c *Client) PlayLink(ctx context.Context, mediaRef domain.MediaRef) (playback.Link, error) {
 	if !c.Configured() {
 		return playback.Link{}, playback.ErrNotConfigured
@@ -137,9 +214,10 @@ func (c *Client) PlayLink(ctx context.Context, mediaRef domain.MediaRef) (playba
 		return playback.Link{}, playback.ErrUnsupported
 	}
 
+	queries := c.buildSearchQueries(mediaRef)
 	failures := make([]string, 0)
 	for _, configuredServer := range c.servers {
-		item, err := c.findMovie(ctx, configuredServer, mediaRef.ID)
+		item, err := c.findMovie(ctx, configuredServer, mediaRef.ID, queries)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s 查询失败: %v", configuredServer.name, err))
 			continue
@@ -180,59 +258,228 @@ func (c *Client) PlayLink(ctx context.Context, mediaRef domain.MediaRef) (playba
 	return playback.Link{}, playback.ErrNotFound
 }
 
-func (c *Client) findMovie(ctx context.Context, configuredServer server, tmdbID int) (*mediaMetadata, error) {
-	var sections mediaContainerResponse
-	if err := c.getJSON(ctx, configuredServer, configuredServer.resolve("/library/sections"), &sections); err != nil {
+func (c *Client) findMovie(ctx context.Context, configuredServer server, tmdbID int, queries []string) (*mediaMetadata, error) {
+	log.Printf("[Plex] [%s] 开始匹配电影 TMDB ID: %d, 搜索词: %v", configuredServer.name, tmdbID, queries)
+	item, err := c.findMovieByHubSearch(ctx, configuredServer, tmdbID, queries)
+	if err != nil {
 		return nil, err
 	}
-	for _, section := range sections.MediaContainer.Directory {
-		if section.Type != "movie" || section.Key == "" {
-			continue
-		}
-		item, err := c.findMovieInSection(ctx, configuredServer, section.Key, tmdbID)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", section.Title, err)
-		}
-		if item != nil {
-			return item, nil
-		}
+	if item != nil {
+		log.Printf("[Plex] [%s] Hub 搜索成功命中电影: %q (ratingKey=%s)", configuredServer.name, item.Title, item.RatingKey)
+		return item, nil
 	}
+	log.Printf("[Plex] [%s] 未在服务器找到 TMDB ID 为 %d 的电影", configuredServer.name, tmdbID)
 	return nil, nil
 }
 
-func (c *Client) findMovieInSection(ctx context.Context, configuredServer server, sectionKey string, tmdbID int) (*mediaMetadata, error) {
-	start := 0
-	for page := 0; page < 1000; page++ {
-		target := configuredServer.resolve("/library/sections/" + url.PathEscape(sectionKey) + "/all")
+func (c *Client) checkItemMatches(ctx context.Context, configuredServer server, item mediaMetadata, tmdbID int) (*mediaMetadata, bool) {
+	if hasTMDBID(item, tmdbID) {
+		return &item, true
+	}
+	if item.RatingKey != "" {
+		detail, err := c.metadata(ctx, configuredServer, item.RatingKey)
+		if err == nil && detail != nil && hasTMDBID(*detail, tmdbID) {
+			return detail, true
+		}
+	}
+	return nil, false
+}
+
+func (c *Client) findMovieByHubSearch(ctx context.Context, configuredServer server, tmdbID int, queries []string) (*mediaMetadata, error) {
+	return c.findByHubSearch(ctx, configuredServer, tmdbID, "movie", queries)
+}
+
+func (c *Client) findByHubSearch(ctx context.Context, configuredServer server, tmdbID int, mediaType string, queries []string) (*mediaMetadata, error) {
+	var failures []string
+	succeeded := false
+	for _, qStr := range queries {
+		target := configuredServer.resolve("/hubs/search")
 		query := target.Query()
-		query.Set("type", "1")
-		query.Set("includeGuids", "1")
-		query.Set("X-Plex-Container-Start", strconv.Itoa(start))
-		query.Set("X-Plex-Container-Size", strconv.Itoa(pageSize))
+		query.Set("query", qStr)
+		query.Set("limit", "5")
 		target.RawQuery = query.Encode()
 
 		var result mediaContainerResponse
 		if err := c.getJSON(ctx, configuredServer, target, &result); err != nil {
-			return nil, err
+			failures = append(failures, err.Error())
+			continue
 		}
-		items := result.MediaContainer.Metadata
-		for index := range items {
-			if hasTMDBID(items[index], tmdbID) {
-				return &items[index], nil
+		succeeded = true
+		for _, item := range result.MediaContainer.Metadata {
+			if item.Type != "" && item.Type != mediaType {
+				continue
+			}
+			if matched, ok := c.checkItemMatches(ctx, configuredServer, item, tmdbID); ok {
+				return matched, nil
 			}
 		}
-		if len(items) == 0 {
-			return nil, nil
-		}
-		start += len(items)
-		if result.MediaContainer.TotalSize > 0 && start >= result.MediaContainer.TotalSize {
-			return nil, nil
-		}
-		if len(items) < pageSize {
-			return nil, nil
+		for _, h := range result.MediaContainer.Hub {
+			if h.Type != "" && h.Type != mediaType {
+				continue
+			}
+			for _, item := range h.Metadata {
+				if item.Type != "" && item.Type != mediaType {
+					continue
+				}
+				if matched, ok := c.checkItemMatches(ctx, configuredServer, item, tmdbID); ok {
+					return matched, nil
+				}
+			}
 		}
 	}
-	return nil, errors.New("Plex 媒体库分页超过限制")
+	if !succeeded && len(failures) > 0 {
+		return nil, errors.New(strings.Join(failures, "；"))
+	}
+	return nil, nil
+}
+
+func (c *Client) SeriesCatalog(ctx context.Context, mediaRef domain.MediaRef) (SeriesCatalog, error) {
+	if !c.Configured() {
+		return SeriesCatalog{}, playback.ErrNotConfigured
+	}
+	if mediaRef.Type != "tv" || mediaRef.ID <= 0 {
+		return SeriesCatalog{}, errors.New("需要有效的剧集 TMDB ID")
+	}
+	queries := c.buildSearchQueries(mediaRef)
+	if len(queries) == 0 {
+		return SeriesCatalog{}, errors.New("缺少可用于 Plex 搜索的剧集名称")
+	}
+
+	failures := make([]string, 0)
+	for serverIndex, configuredServer := range c.servers {
+		item, err := c.findByHubSearch(ctx, configuredServer, mediaRef.ID, "show", queries)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s 查询失败: %v", configuredServer.name, err))
+			continue
+		}
+		if item == nil || item.RatingKey == "" {
+			continue
+		}
+		catalog, err := c.loadSeriesCatalog(ctx, configuredServer, serverIndex, *item)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s 读取剧集目录失败: %v", configuredServer.name, err))
+			continue
+		}
+		if len(catalog.Seasons) == 0 {
+			continue
+		}
+		return catalog, nil
+	}
+	if len(failures) > 0 {
+		return SeriesCatalog{}, errors.New(strings.Join(failures, "；"))
+	}
+	return SeriesCatalog{}, playback.ErrNotFound
+}
+
+func (c *Client) loadSeriesCatalog(ctx context.Context, configuredServer server, serverIndex int, show mediaMetadata) (SeriesCatalog, error) {
+	seasonItems, err := c.children(ctx, configuredServer, show.RatingKey)
+	if err != nil {
+		return SeriesCatalog{}, err
+	}
+	catalog := SeriesCatalog{
+		SeriesTitle: show.Title,
+		ServerID:    strconv.Itoa(serverIndex),
+		ServerName:  configuredServer.name,
+		SeriesKey:   show.RatingKey,
+		Seasons:     make([]Season, 0, len(seasonItems)),
+	}
+	for _, seasonItem := range seasonItems {
+		if (seasonItem.Type != "" && seasonItem.Type != "season") || seasonItem.RatingKey == "" {
+			continue
+		}
+		episodeItems, err := c.children(ctx, configuredServer, seasonItem.RatingKey)
+		if err != nil {
+			return SeriesCatalog{}, err
+		}
+		season := Season{Number: seasonItem.Index, Title: seasonItem.Title, Episodes: make([]Episode, 0, len(episodeItems))}
+		for _, episodeItem := range episodeItems {
+			if (episodeItem.Type != "" && episodeItem.Type != "episode") || episodeItem.RatingKey == "" {
+				continue
+			}
+			seasonNumber := episodeItem.ParentIndex
+			if seasonNumber == 0 && seasonItem.Index != 0 {
+				seasonNumber = seasonItem.Index
+			}
+			season.Episodes = append(season.Episodes, Episode{
+				RatingKey:     episodeItem.RatingKey,
+				SeasonNumber:  seasonNumber,
+				EpisodeNumber: episodeItem.Index,
+				Title:         episodeItem.Title,
+				Duration:      episodeItem.Duration,
+				AirDate:       episodeItem.OriginallyAvailableAt,
+			})
+		}
+		if len(season.Episodes) > 0 {
+			catalog.Seasons = append(catalog.Seasons, season)
+		}
+	}
+	return catalog, nil
+}
+
+func (c *Client) children(ctx context.Context, configuredServer server, ratingKey string) ([]mediaMetadata, error) {
+	items := make([]mediaMetadata, 0)
+	for page := 0; page < 1000; page++ {
+		target := configuredServer.resolve("/library/metadata/" + url.PathEscape(ratingKey) + "/children")
+		query := target.Query()
+		query.Set("X-Plex-Container-Start", strconv.Itoa(len(items)))
+		query.Set("X-Plex-Container-Size", strconv.Itoa(childrenPageSize))
+		target.RawQuery = query.Encode()
+		var result mediaContainerResponse
+		if err := c.getJSON(ctx, configuredServer, target, &result); err != nil {
+			return nil, err
+		}
+		pageItems := result.MediaContainer.Metadata
+		items = append(items, pageItems...)
+		if len(pageItems) == 0 || result.MediaContainer.TotalSize <= len(items) || len(pageItems) < childrenPageSize {
+			return items, nil
+		}
+	}
+	return nil, errors.New("Plex 剧集目录分页超过限制")
+}
+
+func (c *Client) EpisodePlayLink(ctx context.Context, serverID, seriesKey, episodeKey string) (playback.Link, error) {
+	if !c.Configured() {
+		return playback.Link{}, playback.ErrNotConfigured
+	}
+	serverIndex, err := strconv.Atoi(strings.TrimSpace(serverID))
+	if err != nil || serverIndex < 0 || serverIndex >= len(c.servers) || !validRatingKey(seriesKey) || !validRatingKey(episodeKey) {
+		return playback.Link{}, ErrInvalidSeriesRequest
+	}
+	configuredServer := c.servers[serverIndex]
+	item, err := c.metadata(ctx, configuredServer, episodeKey)
+	if err != nil {
+		return playback.Link{}, err
+	}
+	if item == nil || item.Type != "episode" || item.GrandparentRatingKey != seriesKey {
+		return playback.Link{}, playback.ErrNotFound
+	}
+	partKey := firstPartKey(*item)
+	if partKey == "" {
+		return playback.Link{}, errors.New("Plex 未返回可播放的媒体 Part")
+	}
+	playURL := configuredServer.resolve(partKey)
+	query := playURL.Query()
+	query.Set("X-Plex-Token", configuredServer.token)
+	playURL.RawQuery = query.Encode()
+	return playback.Link{
+		PlayURL:      playURL.String(),
+		ItemName:     item.Title,
+		ServerName:   configuredServer.name,
+		PlaybackMode: "stream",
+	}, nil
+}
+
+func validRatingKey(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Client) metadata(ctx context.Context, configuredServer server, ratingKey string) (*mediaMetadata, error) {
@@ -251,6 +498,7 @@ func (c *Client) metadata(ctx context.Context, configuredServer server, ratingKe
 }
 
 func (c *Client) getJSON(ctx context.Context, configuredServer server, target *url.URL, output any) error {
+	start := time.Now()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
 		return err
@@ -261,9 +509,11 @@ func (c *Client) getJSON(ctx context.Context, configuredServer server, target *u
 	request.Header.Set("X-Plex-Client-Identifier", "traker")
 	response, err := c.http.Do(request)
 	if err != nil {
+		log.Printf("[Plex] [%s] HTTP GET %s 失败: %v (耗时 %v)", configuredServer.name, sanitizeURL(target), err, time.Since(start))
 		return err
 	}
 	defer response.Body.Close()
+	log.Printf("[Plex] [%s] HTTP GET %s -> %d (耗时 %v)", configuredServer.name, sanitizeURL(target), response.StatusCode, time.Since(start))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 		return fmt.Errorf("HTTP %d", response.StatusCode)
@@ -272,6 +522,19 @@ func (c *Client) getJSON(ctx context.Context, configuredServer server, target *u
 		return err
 	}
 	return nil
+}
+
+func sanitizeURL(target *url.URL) string {
+	if target == nil {
+		return ""
+	}
+	cloned := *target
+	query := cloned.Query()
+	if query.Has("X-Plex-Token") {
+		query.Set("X-Plex-Token", "***")
+		cloned.RawQuery = query.Encode()
+	}
+	return cloned.String()
 }
 
 func (configuredServer server) resolve(key string) *url.URL {
